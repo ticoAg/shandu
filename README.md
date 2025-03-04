@@ -220,6 +220,6 @@ Shandu implements a sophisticated multi-stage research pipeline:
 - **Robots.txt Compliance**: Ethical web scraping practices
 - **Flexible Output Formats**: Markdown, JSON, plain text
 
-## 📜 License
-
+## 📜 License & INFO
+Note: this is just an idea, i need contributors, this is project where I'm taking deep dive into LangChain and LangGraph!
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
