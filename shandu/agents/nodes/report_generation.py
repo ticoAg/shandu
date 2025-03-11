@@ -12,9 +12,11 @@ from ..processors.report_generator import (
     extract_themes, 
     generate_initial_report,
     enhance_report,
-    expand_key_sections
+    expand_key_sections,
+    format_citations
 )
 from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback, is_shutdown_requested
+from ..utils.citation_registry import CitationRegistry
 
 console = Console()
 
@@ -43,12 +45,44 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
 
     current_date = state["current_date"]
     
+    # Create a citation registry and pre-register all selected sources
+    if "citation_registry" not in state:
+        citation_registry = CitationRegistry()
+        
+        # Pre-register all selected sources
+        if "selected_sources" in state and state["selected_sources"]:
+            citation_registry.bulk_register_sources(state["selected_sources"])
+            
+            # Add metadata to citations from sources
+            for url in state["selected_sources"]:
+                cid = citation_registry.url_to_id.get(url)
+                if cid:
+                    source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
+                    if source_meta:
+                        metadata = {
+                            "title": source_meta.get("title", "Untitled"),
+                            "date": source_meta.get("date", "n.d.")
+                        }
+                        citation_registry.update_citation_metadata(cid, metadata)
+        
+        state["citation_registry"] = citation_registry
+    else:
+        citation_registry = state["citation_registry"]
+    
     # Generate a professional title for the report
     report_title = await generate_title(llm, state['query'])
     console.print(f"[bold green]Generated title: {report_title}[/]")
     
     # Extract themes using our processor function
     extracted_themes = await extract_themes(llm, state['findings'])
+    
+    # Format citations using the citation registry
+    formatted_citations = await format_citations(
+        llm, 
+        state.get('selected_sources', []), 
+        state["sources"],
+        citation_registry
+    )
     
     # Generate the initial report using our processor functions
     initial_report = await generate_initial_report(
@@ -58,16 +92,19 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
         extracted_themes,
         report_title,
         state['selected_sources'],
-        state.get('formatted_citations', ''),
+        formatted_citations,
         current_date,
         state['detail_level'],
-        include_objective
+        include_objective,
+        citation_registry
     )
     
     # Store the themes for later expansion steps
     state["identified_themes"] = extracted_themes
     state["initial_report"] = initial_report
-    log_chain_of_thought(state, "Generated initial comprehensive report with dynamic structure based on content themes")
+    state["formatted_citations"] = formatted_citations
+    
+    log_chain_of_thought(state, f"Generated initial report with {len(citation_registry.citations)} properly tracked citations")
     
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
@@ -91,7 +128,8 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
         state["current_date"], 
         state.get("formatted_citations", ""),
         state.get("selected_sources", []),
-        state["sources"]
+        state["sources"],
+        state.get("citation_registry")
     )
     
     state["enhanced_report"] = enhanced_report
@@ -117,7 +155,8 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
         llm,
         state["enhanced_report"],
         state["identified_themes"],
-        state["current_date"]
+        state["current_date"],
+        state.get("citation_registry")
     )
     
     state["final_report"] = expanded_report
@@ -171,7 +210,8 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
             state.get('formatted_citations', ''),
             state['current_date'],
             state['detail_level'],
-            False # Don't include objective in fallback
+            False, # Don't include objective in fallback
+            state.get('citation_registry')
         )
         
         # Store the initial report
@@ -184,7 +224,8 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
             state['current_date'],
             state.get('formatted_citations', ''),
             state.get('selected_sources', []),
-            state['sources']
+            state['sources'],
+            state.get('citation_registry')
         )
         
         # Store the enhanced report
@@ -195,7 +236,8 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
             llm,
             enhanced_report,
             extracted_themes,
-            state['current_date']
+            state['current_date'],
+            state.get('citation_registry')
         )
         
         # Get the sources that were actually analyzed and used in the research
@@ -266,31 +308,73 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         # Add our title at the beginning
         final_report = f'# {report_title}\n\n{final_report}'
         
-    # Check for malformed references and fix them if needed
-    if "References" in final_report:
-        # Extract references section
-        references_match = re.search(r'#+\s*References.*?(?=#+\s+|\Z)', final_report, re.DOTALL)
-        if references_match:
-            references_section = references_match.group(0)
-            
-            # Check if references are properly formatted
-            if not re.search(r'\[\d+\]', references_section):
-                console.print("[yellow]Fixing improperly formatted references...[/]")
+        # Check for references section and ensure it's properly formatted
+        if "References" in final_report:
+            # Extract references section
+            references_match = re.search(r'#+\s*References.*?(?=#+\s+|\Z)', final_report, re.DOTALL)
+            if references_match:
+                references_section = references_match.group(0)
                 
-                # Replace problematic references section with properly formatted one
-                if state.get("formatted_citations"):
+                # Always replace the references section with our properly formatted web citations
+                console.print("[yellow]Ensuring references are properly formatted as web citations...[/]")
+                
+                # Check and validate citations against the registry
+                citation_registry = state.get("citation_registry")
+                formatted_citations = ""
+                
+                if citation_registry:
+                    # Validate the in-text citations against the registry
+                    validation_result = citation_registry.validate_citations(final_report)
+                    
+                    if not validation_result["valid"]:
+                        # Handle different types of invalid citations
+                        out_of_range_count = len(validation_result.get("out_of_range_citations", set()))
+                        other_invalid_count = len(validation_result["invalid_citations"]) - out_of_range_count
+                        max_valid_id = validation_result.get("max_valid_id", 0)
+                        
+                        console.print(f"[bold yellow]Found {len(validation_result['invalid_citations'])} invalid citations in the report[/]")
+                        
+                        if out_of_range_count > 0:
+                            console.print(f"[bold red]Found {out_of_range_count} out-of-range citations (exceeding max valid ID: {max_valid_id})[/]")
+                        
+                        # Remove invalid citations from the report
+                        for invalid_cid in validation_result["invalid_citations"]:
+                            # For out-of-range citations, replace with valid range indicator
+                            if invalid_cid in validation_result.get("out_of_range_citations", set()):
+                                replacement = f'[1-{max_valid_id}]'  # Suggest valid range
+                                final_report = re.sub(f'\\[{invalid_cid}\\]', replacement, final_report)
+                            else:
+                                # Replace other invalid patterns like [invalid_cid] with [?]
+                                final_report = re.sub(f'\\[{invalid_cid}\\]', '[?]', final_report)
+                    
+                    # Create updated citations using only the actually used citations
+                    used_citations = validation_result["used_citations"]
+                    if used_citations:
+                        # Generate formatted citations from used citations
+                        formatted_citations = await format_citations(
+                            llm, 
+                            state.get('selected_sources', []), 
+                            state["sources"],
+                            citation_registry
+                        )
+                
+                # Replace references section with properly formatted ones
+                if formatted_citations:
+                    new_references = f"# References\n\n{formatted_citations}\n"
+                    final_report = final_report.replace(references_section, new_references)
+                elif state.get("formatted_citations"):
                     new_references = f"# References\n\n{state['formatted_citations']}\n"
                     final_report = final_report.replace(references_section, new_references)
                 else:
-                    # Generate basic references if formatted_citations isn't available
+                    # Generate web-style references if formatted_citations isn't available
                     basic_references = []
                     for i, url in enumerate(state.get("selected_sources", []), 1):
                         source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
                         title = source_meta.get("title", "Untitled")
-                        source = source_meta.get("source", url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source")
+                        domain = url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source"
                         date = source_meta.get("date", "n.d.")
                         
-                        citation = f"[{i}] *{source}*, \"{title}\", {date}, {url}"
+                        citation = f"[{i}] *{domain}*, \"{title}\", {date}, {url}"
                         basic_references.append(citation)
                     
                     new_references = f"# References\n\n" + "\n".join(basic_references) + "\n"
