@@ -2,11 +2,20 @@
 Citation formatting node for research graph.
 """
 from rich.console import Console
+from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState
 from ..processors.report_generator import format_citations
 from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback
 
 console = Console()
+
+# Structured output model for citations
+class FormattedCitations(BaseModel):
+    """Structured output for formatted citations."""
+    citations: list[str] = Field(
+        description="List of properly formatted citations",
+        min_items=1
+    )
 
 async def format_citations_node(llm, progress_callback, state: AgentState) -> AgentState:
     """Format citations for selected sources to ensure consistent referencing."""

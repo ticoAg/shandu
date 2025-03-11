@@ -1,170 +1,185 @@
 """
 Search node for research graph.
-Handles searching and processing of content.
 """
-import time
 import asyncio
+import time
+import random
+from typing import List, Dict, Any, Optional
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState, is_relevant_url, process_scraped_item, analyze_content
-from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback
+from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback, is_shutdown_requested
+from ...search.search import SearchResult
 
 console = Console()
 
+# Structured output model for search results
+class SearchResultAnalysis(BaseModel):
+    """Structured output for search result analysis."""
+    relevant_urls: list[str] = Field(
+        description="List of URLs that are relevant to the query",
+        min_items=0
+    )
+    analysis: str = Field(
+        description="Analysis of the search results"
+    )
+
 async def search_node(llm, searcher, scraper, progress_callback, state: AgentState) -> AgentState:
-    """Search for information and analyze results for the current research queries."""
-    state["status"] = "Searching and analyzing content"
-    recent_queries = state["subqueries"][-state["breadth"]:]
-    processed_queries = set()
+    """
+    Search for information based on the current subqueries.
     
-    # Create a simple LRU cache for URL relevance checks to reduce redundant LLM calls
-    url_relevance_cache = {}
-    max_cache_size = 100
+    Args:
+        llm: Language model to use
+        searcher: Search engine to use
+        scraper: Web scraper to use
+        progress_callback: Callback function for progress updates
+        state: Current agent state
+        
+    Returns:
+        Updated agent state
+    """
+    # Check if shutdown was requested
+    if is_shutdown_requested():
+        state["status"] = "Shutdown requested, skipping search"
+        log_chain_of_thought(state, "Shutdown requested, skipping search")
+        return state
     
-    # Create a wrapper around is_relevant_url to add caching
-    async def cached_relevance_check(url, title, snippet, query):
-        # Check cache before making LLM call
-        cache_key = f"{url}:{query}"
-        if cache_key in url_relevance_cache:
-            return url_relevance_cache[cache_key]
-        
-        # Call the imported is_relevant_url function
-        result = await is_relevant_url(llm, url, title, snippet, query)
-        
-        # Update cache with result
-        if len(url_relevance_cache) >= max_cache_size:
-            # Remove a random item if cache is full
-            url_relevance_cache.pop(next(iter(url_relevance_cache)))
-        url_relevance_cache[cache_key] = result
-        
-        return result
+    state["status"] = f"Searching for information (Depth {state['current_depth']})"
     
-    # Process multiple queries in parallel
-    async def process_query(subquery, query_task, progress):
-        if subquery in processed_queries:
-            return
+    # Get the most recent subqueries based on breadth
+    breadth = state["breadth"]
+    if len(state["subqueries"]) > 0:
+        recent_queries = state["subqueries"][-breadth:]
+    else:
+        # If no subqueries, use the main query
+        recent_queries = [state["query"]]
+    
+    # Process each query
+    for query_idx, query in enumerate(recent_queries):
+        if is_shutdown_requested():
+            log_chain_of_thought(state, f"Shutdown requested, stopping search after {query_idx} queries")
+            break
+            
+        console.print(f"Executing {searcher.default_engine} search for: {query}")
+        state["status"] = f"Searching for: {query}"
         
-        processed_queries.add(subquery)
-        
+        # Search for the query
         try:
-            log_chain_of_thought(state, f"Searching for: {subquery}")
-            console.print(f"[dim]Executing search for: {subquery}[/dim]")
-            search_results = await searcher.search(subquery)
-            progress.update(query_task, advance=0.3, description=f"[yellow]Found {len(search_results)} results for: {subquery}")
-            
-            urls = []
-            seen = set()
-            
-            # Batch URL relevance checks with asyncio.gather
-            relevance_tasks = []
-            for i, result in enumerate(search_results):
-                if len(urls) >= 5:  # Maximum number of URLs to analyze
-                    break
-                if (result.url and isinstance(result.url, str) and result.url not in seen and 
-                    result.url.startswith('http')):
-                    relevance_tasks.append((i, result, cached_relevance_check(result.url, result.title, result.snippet, subquery)))
-            
-            # Wait for all relevance checks to complete
-            for i, result, relevance_task in relevance_tasks:
-                is_relevant = await relevance_task
-                if is_relevant and len(urls) < 5:
-                    urls.append(result.url)
-                    seen.add(result.url)
-                    log_chain_of_thought(state, f"Selected relevant URL: {result.url}")
-                    console.print(f"[green]Selected for analysis:[/green] {result.title}")
-                    console.print(f"[blue]URL:[/blue] {result.url}")
-                    if result.snippet:
-                        console.print(f"[dim]{result.snippet[:150]}{'...' if len(result.snippet) > 150 else ''}[/dim]")
-                    console.print("")
-            
-            if urls:
-                progress.update(query_task, advance=0.2, description=f"[yellow]Scraping {len(urls)} pages for: {subquery}")
-                scraped = await scraper.scrape_urls(urls, dynamic=True)
-                successful_scraped = [s for s in scraped if s.is_successful()]
-                
-                if successful_scraped:
-                    progress.update(query_task, advance=0.2, description=f"[yellow]Analyzing content for: {subquery}")
-                    content_text = ""
-                    
-                    # Process all scraped items in parallel using our processor module
-                    processing_tasks = []
-                    for item in successful_scraped:
-                        main_content = await scraper.extract_main_content(item)
-                        processing_tasks.append(process_scraped_item(llm, item, subquery, main_content))
-                    
-                    # Process all items in parallel
-                    processed_items = await asyncio.gather(*processing_tasks)
-                    
-                    # Build content text from processed items
-                    relevant_items = []
-                    for processed in processed_items:
-                        if processed["rating"] == "LOW":
-                            console.print(f"[yellow]Skipping low-reliability source: {processed['item'].url}[/yellow]")
-                            continue
-                        
-                        relevant_items.append(processed)
-                        content_text += f"\nSource: {processed['item'].url}\nTitle: {processed['item'].title}\nReliability: {processed['rating']}\nRelevant Content:\n{processed['content']}\n\n"
-                        console.print(f"\n[bold cyan]Analyzing page:[/bold cyan] {processed['item'].title}")
-                        console.print(f"[blue]URL:[/blue] {processed['item'].url}")
-                        console.print(f"[dim]Extracted Content: {processed['content'][:150]}{'...' if len(processed['content']) > 150 else ''}[/dim]")
-                    
-                    if relevant_items:
-                        try:
-                            # Use our analyze_content function from the processors module
-                            analysis_content = await analyze_content(llm, subquery, content_text)
-                            
-                            state["content_analysis"].append({
-                                "subquery": subquery,
-                                "analysis": analysis_content,
-                                "sources": [item["item"].url for item in relevant_items]
-                            })
-                            
-                            # Store findings with thematic headers
-                            state["findings"] += f"\n\n## Research on '{subquery}':\n{analysis_content}\n"
-                            log_chain_of_thought(state, f"Analyzed content for query: {subquery}")
-                        except Exception as e:
-                            console.print(f"[dim red]Error in content analysis for {subquery}: {str(e)}[/dim red]")
-                            # Log the error but continue with the process
-                            log_chain_of_thought(state, f"Error analyzing content for '{subquery}': {str(e)}")
-            
-            for r in search_results:
-                if hasattr(r, 'to_dict'):
-                    state["sources"].append(r.to_dict())
-                elif isinstance(r, dict):
-                    state["sources"].append(r)
-            
-            progress.update(query_task, completed=True, description=f"[green]Completed: {subquery}")
-            return True
-            
+            search_results = await searcher.search(query, engines=[searcher.default_engine])
         except Exception as e:
-            progress.update(query_task, completed=True, description=f"[red]Error: {subquery} - {str(e)}")
-            state["messages"].append(HumanMessage(content=f"Failed to process subquery: {subquery}"))
-            log_chain_of_thought(state, f"Error processing query '{subquery}': {str(e)}")
-            console.print(f"[dim red]Error processing {subquery}: {str(e)}[/dim red]")
-            return False
-    
-    with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console) as progress:
-        # Create all tasks first
-        tasks = {}
-        for i, subquery in enumerate(recent_queries):
-            if subquery not in processed_queries:
-                task_id = progress.add_task(f"[yellow]Searching: {subquery}", total=1)
-                tasks[subquery] = task_id
+            console.print(f"[red]Error during search: {e}[/]")
+            log_chain_of_thought(state, f"Error during search for '{query}': {str(e)}")
+            continue
         
-        # Process queries in parallel batches to avoid overwhelming the system
-        batch_size = min(3, len(tasks))  # Process up to 3 queries at once
+        # Filter relevant URLs
+        relevant_urls = []
+        for result in search_results:
+            console.print(f"{searcher.default_engine} search result type: {type(result)}")
+            console.print(f"{searcher.default_engine} search result attributes: {result.__dict__}")
+            
+            is_relevant = await is_relevant_url(llm, result.url, result.title, result.snippet, query)
+            
+            if is_relevant:
+                relevant_urls.append(result)
+                
+                # Add to sources
+                state["sources"].append({
+                    "url": result.url,
+                    "title": result.title,
+                    "snippet": result.snippet,
+                    "source": result.source,
+                    "query": query
+                })
         
-        for i in range(0, len(tasks), batch_size):
-            batch_queries = list(tasks.keys())[i:i+batch_size]
-            batch_tasks = [process_query(query, tasks[query], progress) for query in batch_queries]
-            await asyncio.gather(*batch_tasks)
+        # If no relevant URLs, continue to next query
+        if not relevant_urls:
+            log_chain_of_thought(state, f"No relevant URLs found for '{query}'")
+            continue
+        
+        # Limit to top 5 results to avoid too many requests
+        relevant_urls = relevant_urls[:5]
+        
+        # Scrape the relevant URLs
+        urls_to_scrape = [result.url for result in relevant_urls]
+        
+        # Process in batches to avoid overwhelming the server
+        batch_size = 3
+        
+        # Ensure batch_size is at least 1
+        batch_size = max(1, batch_size)
+        
+        # Calculate number of batches, ensuring we don't divide by zero
+        if len(urls_to_scrape) > 0 and batch_size > 0:
+            num_batches = (len(urls_to_scrape) + batch_size - 1) // batch_size
+        else:
+            num_batches = 0
+        
+        scraped_contents = []
+        
+        # Process each batch
+        for i in range(0, len(urls_to_scrape), batch_size):
+            if is_shutdown_requested():
+                log_chain_of_thought(state, f"Shutdown requested, stopping scraping after {len(scraped_contents)} URLs")
+                break
+                
+            # Get the current batch
+            batch = urls_to_scrape[i:i+batch_size]
+            
+            # Scrape the batch
+            batch_results = await scraper.scrape_urls(batch)
+            scraped_contents.extend(batch_results)
+            
+            # Add a small delay between batches
+            if i + batch_size < len(urls_to_scrape):
+                await asyncio.sleep(random.uniform(1.0, 2.0))
+        
+        # Process each scraped item
+        processed_items = []
+        for item in scraped_contents:
+            if not item.is_successful():
+                continue
+                
+            console.print(f"Analyzing page: {item.title}")
+            console.print(f"URL: {item.url}")
+            
+            # Extract a preview of the content
+            content_preview = item.text[:200] + "..." if len(item.text) > 200 else item.text
+            console.print(f"Extracted Content: {content_preview}")
+            
+            # Process the scraped item
+            processed_item = await process_scraped_item(llm, item, query, item.text)
+            processed_items.append(processed_item)
+        
+        # If no processed items, continue to next query
+        if not processed_items:
+            log_chain_of_thought(state, f"No content could be extracted from URLs for '{query}'")
+            continue
+        
+        # Combine the processed content for analysis
+        combined_content = "\n\n".join([f"Source: {item['item'].url}\nTitle: {item['item'].title}\nContent: {item['content']}" for item in processed_items])
+        
+        # Analyze the combined content
+        analysis = await analyze_content(llm, query, combined_content)
+        
+        # Add the analysis to the state
+        state["content_analysis"].append({
+            "query": query,
+            "sources": [item["item"].url for item in processed_items],
+            "analysis": analysis
+        })
+        
+        # Add the analysis to the findings
+        state["findings"] += f"\n\n## Analysis for: {query}\n\n{analysis}\n\n"
+        
+        # Update progress
+        log_chain_of_thought(state, f"Analyzed content for query: {query}")
+        if progress_callback:
+            await _call_progress_callback(progress_callback, state)
     
+    # Critical fix: Increment current_depth to prevent infinite loop
     state["current_depth"] += 1
-    elapsed_time = time.time() - state["start_time"]
-    minutes, seconds = divmod(int(elapsed_time), 60)
-    state["status"] = f"Completed depth {state['current_depth']}/{state['depth']} ({minutes}m {seconds}s elapsed)"
+    log_chain_of_thought(state, f"Completed depth {state['current_depth']} of {state['depth']}")
     
-    if progress_callback:
-        await _call_progress_callback(progress_callback, state)
     return state

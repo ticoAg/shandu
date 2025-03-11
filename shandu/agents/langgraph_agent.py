@@ -17,7 +17,8 @@ from .processors import AgentState
 from .utils.agent_utils import (
     get_user_input,
     clarify_query,
-    display_research_progress
+    display_research_progress,
+    is_shutdown_requested
 )
 from .nodes import (
     initialize_node,
@@ -106,6 +107,10 @@ class ResearchGraph:
         self.include_objective = include_objective
         self.detail_level = detail_level
 
+        # Validate parameters to prevent errors
+        depth = max(1, min(5, depth))  # Ensure depth is between 1 and 5
+        breadth = max(1, min(10, breadth))  # Ensure breadth is between 1 and 10
+
         state = AgentState(
             messages=[HumanMessage(content=f"Starting research on: {query}")],
             query=query,
@@ -129,29 +134,57 @@ class ResearchGraph:
             final_report=""
         )
         
-        final_state = await self.graph.ainvoke(state)
-        
-        elapsed_time = time.time() - final_state["start_time"]
-        minutes, seconds = divmod(int(elapsed_time), 60)
-        
-        return ResearchResult(
-            query=query,
-            summary=final_state["findings"],
-            sources=final_state["sources"],
-            subqueries=final_state["subqueries"],
-            depth=depth,
-            content_analysis=final_state["content_analysis"],
-            chain_of_thought=final_state["chain_of_thought"],
-            research_stats={
-                "elapsed_time": elapsed_time,
-                "elapsed_time_formatted": f"{minutes}m {seconds}s",
-                "sources_count": len(final_state["sources"]),
-                "subqueries_count": len(final_state["subqueries"]),
-                "depth": depth,
-                "breadth": breadth,
-                "detail_level": detail_level
-            }
-        )
+        try:
+            # Invoke the graph with increased recursion limit
+            final_state = await self.graph.ainvoke(state, {"recursion_limit": 50})
+            
+            elapsed_time = time.time() - final_state["start_time"]
+            minutes, seconds = divmod(int(elapsed_time), 60)
+            
+            return ResearchResult(
+                query=query,
+                summary=final_state["findings"],
+                sources=final_state["sources"],
+                subqueries=final_state["subqueries"],
+                depth=depth,
+                content_analysis=final_state["content_analysis"],
+                chain_of_thought=final_state["chain_of_thought"],
+                research_stats={
+                    "elapsed_time": elapsed_time,
+                    "elapsed_time_formatted": f"{minutes}m {seconds}s",
+                    "sources_count": len(final_state["sources"]),
+                    "subqueries_count": len(final_state["subqueries"]),
+                    "depth": depth,
+                    "breadth": breadth,
+                    "detail_level": detail_level
+                }
+            )
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Research interrupted by user. Generating report with current findings...[/]")
+            
+            # Generate a report with what we have so far
+            elapsed_time = time.time() - state["start_time"]
+            minutes, seconds = divmod(int(elapsed_time), 60)
+            
+            return ResearchResult(
+                query=query,
+                summary=state["findings"] + "\n\n*Note: Research was interrupted before completion.*",
+                sources=state["sources"],
+                subqueries=state["subqueries"],
+                depth=state["current_depth"],
+                content_analysis=state["content_analysis"],
+                chain_of_thought=state["chain_of_thought"],
+                research_stats={
+                    "elapsed_time": elapsed_time,
+                    "elapsed_time_formatted": f"{minutes}m {seconds}s",
+                    "sources_count": len(state["sources"]),
+                    "subqueries_count": len(state["subqueries"]),
+                    "depth": state["current_depth"],
+                    "breadth": breadth,
+                    "detail_level": detail_level,
+                    "interrupted": True
+                }
+            )
     
     def research_sync(
         self, 
@@ -163,6 +196,8 @@ class ResearchGraph:
         detail_level: str = "high"
     ) -> ResearchResult:
         """Synchronous wrapper for research."""
-        return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level))
-
-# These functions are now imported from utils.agent_utils
+        try:
+            return asyncio.run(self.research(query, depth, breadth, progress_callback, include_objective, detail_level))
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Research interrupted by user.[/]")
+            raise

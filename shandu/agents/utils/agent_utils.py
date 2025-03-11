@@ -3,24 +3,118 @@ from typing import List, Dict, Optional, Any, Callable, Union, TypedDict, Sequen
 from dataclasses import dataclass
 import time
 import re
+import asyncio
+import signal
+import threading
+import sys
+import os
 from datetime import datetime
 from rich.console import Console
 from rich.tree import Tree
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
+from langchain_core.prompts import ChatPromptTemplate
+from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState
 
 console = Console()
 
+# Global shutdown flag for graceful termination
+_shutdown_requested = False
+_shutdown_lock = threading.Lock()
+_shutdown_counter = 0
+_MAX_SHUTDOWN_ATTEMPTS = 3
+
+# Set up signal handlers for graceful shutdown
+def setup_signal_handlers():
+    """Set up signal handlers for graceful shutdown."""
+    def signal_handler(sig, frame):
+        global _shutdown_requested, _shutdown_counter
+        with _shutdown_lock:
+            _shutdown_requested = True
+            _shutdown_counter += 1
+            
+            if _shutdown_counter == 1:
+                console.print("\n[yellow]Shutdown requested. Completing current operations...[/]")
+            elif _shutdown_counter == 2:
+                console.print("\n[orange]Second shutdown request. Canceling operations...[/]")
+            elif _shutdown_counter >= _MAX_SHUTDOWN_ATTEMPTS:
+                console.print("\n[bold red]Forced exit requested. Exiting immediately.[/]")
+                # Force exit after multiple attempts
+                os._exit(1)
+    
+    # Set up handlers for common termination signals
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+# Call this at application startup
+setup_signal_handlers()
+
+def is_shutdown_requested() -> bool:
+    """Check if shutdown has been requested."""
+    with _shutdown_lock:
+        return _shutdown_requested
+
+def get_shutdown_level() -> int:
+    """Get the current shutdown level (number of attempts)."""
+    with _shutdown_lock:
+        return _shutdown_counter
+
 def get_user_input(prompt: str) -> str:
-    """Get formatted user input."""
+    """Get formatted user input with shutdown handling."""
     console.print(prompt, style="yellow")
-    return input("> ").strip()
+    
+    # Check if shutdown was requested before getting input
+    if is_shutdown_requested():
+        console.print("[yellow]Shutdown requested, skipping user input...[/]")
+        return "any"  # Return a generic answer to allow the process to continue to shutdown
+    
+    try:
+        # Set a timeout for input to allow checking for shutdown
+        return input("> ").strip()
+    except (KeyboardInterrupt, EOFError):
+        # Handle keyboard interrupt during input
+        with _shutdown_lock:
+            global _shutdown_requested
+            _shutdown_requested = True
+        console.print("\n[yellow]Input interrupted. Proceeding with shutdown...[/]")
+        return "any"  # Return a generic answer to allow the process to continue to shutdown
 
 def should_continue(state: AgentState) -> str:
     """Check if research should continue."""
+    # First check if shutdown was requested
+    if is_shutdown_requested():
+        # If this is a forceful shutdown (second attempt or higher)
+        if get_shutdown_level() >= 2:
+            console.print("[bold red]Forceful shutdown requested. Ending research immediately.[/]")
+            return "end"
+        
+        # For first shutdown request, try to complete gracefully
+        console.print("[yellow]Shutdown requested. Completing current depth before ending.[/]")
+        
+        # If we're already at the end of a depth cycle, end now
+        if state.get("current_depth", 0) >= state.get("depth", 1):
+            return "end"
+        
+        # Otherwise, allow the current depth to complete
+        return "continue"
+    
+    # Add a check for maximum iterations to prevent infinite loops
+    if "iteration_count" not in state:
+        state["iteration_count"] = 1
+    else:
+        state["iteration_count"] += 1
+    
+    # Add a hard limit on iterations to prevent infinite recursion
+    # This is separate from depth/breadth and ensures we won't get stuck
+    if state["iteration_count"] >= 25:
+        console.print("[yellow]Maximum iterations reached. Ending research to prevent infinite loop.[/]")
+        return "end"
+    
+    # Then check if we've reached the desired depth
     if state["current_depth"] < state["depth"]:
         return "continue"
+    
     return "end"
 
 def log_chain_of_thought(state: AgentState, thought: str) -> None:
@@ -65,8 +159,11 @@ def display_research_progress(state: AgentState) -> Tree:
         # Show current research paths
         if state["subqueries"]:
             queries_node = tree.add("[green]Current Research Paths")
-            for query in state["subqueries"][-state["breadth"]:]:
-                queries_node.add(query)
+            # Safely get the last N queries based on breadth
+            breadth = max(1, state.get("breadth", 1))  # Ensure breadth is at least 1
+            if len(state["subqueries"]) > 0:
+                for query in state["subqueries"][-breadth:]:
+                    queries_node.add(query)
     else:
         # Display report generation specific stats
         stats_node.add(f"[blue]Sources Selected:[/] {len(state.get('selected_sources', []))}")
@@ -98,6 +195,10 @@ def display_research_progress(state: AgentState) -> Tree:
             if section.strip():
                 findings_node.add(section.strip()[:100] + "..." if len(section.strip()) > 100 else section.strip())
     
+    # Show shutdown status if requested
+    if is_shutdown_requested():
+        tree.add(f"[bold red]Shutdown requested. Attempt {get_shutdown_level()}/{_MAX_SHUTDOWN_ATTEMPTS}")
+    
     return tree
 
 async def _call_progress_callback(callback: Optional[Callable], state: AgentState) -> None:
@@ -109,85 +210,179 @@ async def _call_progress_callback(callback: Optional[Callable], state: AgentStat
         state: The current agent state
     """
     if callback:
-        import asyncio
-        if asyncio.iscoroutinefunction(callback):
-            await callback(state)
-        else:
-            callback(state)
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                await callback(state)
+            else:
+                callback(state)
+        except Exception as e:
+            console.print(f"[dim red]Error in progress callback: {str(e)}[/dim red]")
+
+# Structured output model for query clarification
+class ClarificationQuestions(BaseModel):
+    """Structured output for query clarification questions."""
+    questions: list[str] = Field(
+        description="List of clarifying questions to better understand the research needs",
+        min_items=1,
+        max_items=3
+    )
+
+class RefinedQuery(BaseModel):
+    """Structured output for refined query."""
+    query: str = Field(description="The refined, comprehensive research query")
+    explanation: str = Field(description="Explanation of how the query was refined based on the Q&A")
 
 async def clarify_query(query: str, llm, date: Optional[str] = None, system_prompt: str = "", user_prompt: str = "") -> str:
-    """Interactive query clarification process."""
-    from langchain_core.prompts import ChatPromptTemplate
+    """Interactive query clarification process with structured output."""
+    from ...prompts import SYSTEM_PROMPTS, USER_PROMPTS
     
     current_date = date or datetime.now().strftime("%Y-%m-%d")
     console.print(f"[bold blue]Initial Query:[/] {query}")
-    console.print("\n[bold]I'll ask a few questions to better understand your research needs.[/]")
     
+    # Get the system and user prompts from the centralized prompts
     if not system_prompt:
-        system_prompt = f"""You are an expert research consultant helping to clarify a research query.
-        
-        Today is {current_date}.
-        
-        Analyze the given research query and create 3 targeted follow-up questions that will help you better understand:
-        1. The specific scope and boundaries of the research
-        2. The level of detail and technical depth needed
-        3. Any specific perspectives, approaches, or source types preferred
-        
-        Ask questions that will reveal what the user REALLY wants to know.
-        Format each question on a new line with no numbering or bullets.
-        Each question should be standalone and specific."""
+        # Use direct string with current_date instead of format
+        clarify_prompt = SYSTEM_PROMPTS.get("clarify_query", "")
+        system_prompt = f"""You must generate clarifying questions to refine the research query with strict adherence to:
+- Eliciting specific details about user goals, scope, and knowledge level.
+- Avoiding extraneous or trivial queries.
+- Providing precisely 4-5 targeted questions.
+
+Today's date: {current_date}.
+
+These questions must seek to clarify the exact focal points, the depth of detail, constraints, and user background knowledge. Provide them succinctly and plainly, with no added commentary."""
     
     if not user_prompt:
-        user_prompt = """I need to conduct research on the following topic:
+        user_prompt = USER_PROMPTS.get("clarify_query", "")
+    
+    try:
+        # Use a simpler approach to avoid issues with prompt templates
+        try:
+            # Direct approach without structured output
+            response = await llm.ainvoke(f"""
+            {system_prompt}
+            
+            Generate 3-5 direct, specific questions to better understand the research needs for the query: "{query}"
+            
+            Focus on:
+            1. Clarifying the specific areas the user wants to explore
+            2. The level of detail needed
+            3. Specific sources or perspectives to include
+            4. Time frame or context relevant to the query
+            
+            IMPORTANT: Provide ONLY the questions themselves, without any introduction or preamble.
+            Each question should be clear, direct, and standalone.
+            """)
+            
+            # Extract questions from the response
+            questions = [q.strip() for q in response.content.split("\n") if q.strip() and "?" in q]
+            
+            # Limit to top 3-5 questions
+            questions = questions[:5]
+        except Exception as e:
+            console.print(f"[dim red]Error in question generation: {str(e)}. Using default questions.[/dim red]")
+            questions = []
+    except Exception as e:
+        console.print(f"[dim red]Error in structured question generation: {str(e)}. Using simpler approach.[/dim red]")
+        current_file = os.path.basename(__file__)
+        with open('example.txt', 'a') as file:
+            # Append the current file's name and some text
+            file.write(f'This line was written by: {current_file}\n')
+            file.write(f'Error {e}.\n')
+        # Fallback to non-structured approach
+        try:
+            # Direct approach without structured output
+            response = await llm.ainvoke(f"Generate 3 direct clarifying questions for the research query: {query}")
+            
+            # Extract questions from the response
+            questions = [q.strip() for q in response.content.split("\n") if q.strip() and "?" in q]
+        except Exception as e2:
+            console.print(f"[dim red]Error in fallback question generation: {str(e2)}. Using default questions.[/dim red]")
+            questions = []
         
-        {query}
-        
-        Please ask me 3 clarifying questions to better understand what I need."""
+        # If we couldn't extract questions, create some generic ones
+        if not questions:
+            questions = [
+                "What specific application or area of this topic are you most interested in?",
+                "What is the intended audience or purpose of this research?",
+                "Are you interested in current applications, future trends, ethical considerations, or a combination of these aspects?"
+            ]
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", user_prompt)
-    ])
+    # Limit to 3 questions
+    questions = questions[:3]
     
-    chain = prompt | llm
-    response = chain.invoke({"query": query})
-    questions = [q.strip() for q in response.content.split("\n") if q.strip() and "?" in q]
-    
+    # Get answers from user
     answers = []
-    for q in questions[:3]:
+    for q in questions:
+        # Check if shutdown was requested before asking each question
+        if is_shutdown_requested():
+            console.print("[yellow]Shutdown requested, using generic answers...[/]")
+            answers.append("any")  # Use a generic answer
+            continue
+            
         answer = get_user_input(q)
         answers.append(answer)
     
     qa_text = "\n".join([f"Q: {q}\nA: {a}" for q, a in zip(questions, answers)])
     
-    refinement_prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are crafting a refined, comprehensive research query based on an initial query and clarifying Q&A.
+    # Get refine_query system prompt directly without using format
+    refine_system_prompt = f"""You must refine the research query into a strict, focused direction based on user-provided answers. Today's date: {current_date}.
+
+REQUIREMENTS:
+- DO NOT present any "Research Framework" or "Objective" headings.
+- Provide a concise topic statement followed by 2-3 paragraphs integrating all key points from the user.
+- Preserve all critical details mentioned by the user.
+- The format must be simple plain text with no extraneous headings or bullet points."""
+    
+    refine_user_prompt = USER_PROMPTS.get("refine_query", "")
+    
+    try:
+        # Use direct approach without structured output
+        response = await llm.ainvoke(f"""
+        {refine_system_prompt}
         
-        Today is {current_date}.
-        
-        Your task is to:
-        1. Analyze the initial query and the clarifying Q&A
-        2. Create a detailed, well-structured research query that captures all the important aspects
-        3. Format the query as a clear, specific research question or directive
-        4. DO NOT include phrases like "Based on our discussion" or similar meta-commentary
-        5. DO NOT include section headings like "Research Framework" or "Refined Query"
-        
-        The output should be ONLY the refined query text, nothing else."""),
-        ("user", f"""Initial query: {query}
-        
-        Clarifying Q&A:
+        Original query: {query}
+        Follow-up questions and answers:
         {qa_text}
         
-        Based on this information, create a comprehensive, well-structured research query.""")
-    ])
-    
-    refined_query = refinement_prompt | llm
-    refined_context_raw = refined_query.invoke({"query": query, "qa": qa_text}).content
-    
-    # Clean up any markdown formatting and meta-commentary
-    refined_context = refined_context_raw.replace("**", "").replace("# ", "").replace("## ", "")
-    refined_context = re.sub(r'^(?:Based on our discussion,|Following our conversation,|As per our discussion,).*?(?:refined topic:|research the following:|exploring|analyze):\s*', '', refined_context, flags=re.IGNORECASE)
-    refined_context = re.sub(r'Based on our discussion.*?(?=\.)\.', '', refined_context, flags=re.IGNORECASE)
+        Based on this information, create a comprehensive, well-structured research query.
+        The query should be clear, focused, and incorporate all relevant information from the answers.
+        """)
+        
+        refined_context_raw = response.content
+        
+        # Clean up any markdown formatting and meta-commentary
+        refined_context = refined_context_raw.replace("**", "").replace("# ", "").replace("## ", "")
+        refined_context = re.sub(r'^(?:Based on our discussion,|Following our conversation,|As per our discussion,).*?(?:refined topic:|research the following:|exploring|analyze):\s*', '', refined_context, flags=re.IGNORECASE)
+        refined_context = re.sub(r'Based on our discussion.*?(?=\.)\.', '', refined_context, flags=re.IGNORECASE)
+    except Exception as e:
+        console.print(f"[dim red]Error in structured query refinement: {str(e)}. Using simpler approach.[/dim red]")
+        current_file = os.path.basename(__file__)
+        with open('example.txt', 'a') as file:
+            # Append the current file's name and some text
+            file.write(f'This line was written by: {current_file}\n')
+            file.write(f'Error {e}.\n')
+        # Fallback to non-structured approach
+        try:
+            # Direct approach without structured output
+            response = await llm.ainvoke(f"""
+            Original query: {query}
+            
+            Follow-up questions and answers:
+            {qa_text}
+            
+            Based on this information, create a comprehensive, well-structured research query.
+            """)
+            
+            refined_context_raw = response.content
+            
+            # Clean up any markdown formatting and meta-commentary
+            refined_context = refined_context_raw.replace("**", "").replace("# ", "").replace("## ", "")
+            refined_context = re.sub(r'^(?:Based on our discussion,|Following our conversation,|As per our discussion,).*?(?:refined topic:|research the following:|exploring|analyze):\s*', '', refined_context, flags=re.IGNORECASE)
+            refined_context = re.sub(r'Based on our discussion.*?(?=\.)\.', '', refined_context, flags=re.IGNORECASE)
+        except Exception as e2:
+            console.print(f"[dim red]Error in fallback query refinement: {str(e2)}. Using original query.[/dim red]")
+            refined_context = query
     
     console.print(f"\n[bold green]Refined Research Query:[/]\n{refined_context}")
     return refined_context

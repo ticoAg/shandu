@@ -7,6 +7,8 @@ import sys
 import json
 import asyncio
 import time
+import signal
+import threading
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import click
@@ -27,9 +29,26 @@ from .search.search import UnifiedSearcher
 from .search.ai_search import AISearcher
 from .scraper import WebScraper
 from .research.researcher import DeepResearcher
+from .agents.utils.agent_utils import is_shutdown_requested, get_shutdown_level
 
 # Initialize console
 console = Console()
+
+# Global flag for force exit
+_force_exit_requested = False
+_force_exit_lock = threading.Lock()
+
+def setup_force_exit_handler():
+    """Set up a force exit handler for the CLI."""
+    def force_exit_handler(sig, frame):
+        global _force_exit_requested
+        with _force_exit_lock:
+            _force_exit_requested = True
+            console.print("\n[bold red]Force exit requested. Exiting immediately.[/]")
+            os._exit(1)  # Force exit
+    
+    # Register the handler for SIGINT (Ctrl+C)
+    signal.signal(signal.SIGINT, force_exit_handler)
 
 def display_banner():
     """Display the Shandu banner."""
@@ -112,6 +131,10 @@ def create_research_dashboard(state: AgentState) -> Layout:
     layout["chain_of_thought"].update(Panel(cot_text, title="Chain of Thought"))
     
     footer_text = "Press Ctrl+C to stop research"
+    if is_shutdown_requested():
+        shutdown_level = get_shutdown_level()
+        footer_text = f"[yellow]Shutdown requested (attempt {shutdown_level}). Press Ctrl+C {4 - shutdown_level} more times to force exit.[/]"
+    
     layout["footer"].update(Panel(footer_text, style="dim"))
     
     return layout
@@ -119,6 +142,8 @@ def create_research_dashboard(state: AgentState) -> Layout:
 @click.group()
 def cli():
     """Shandu deep research system."""
+    # Set up the force exit handler
+    setup_force_exit_handler()
     display_banner()
     pass
 

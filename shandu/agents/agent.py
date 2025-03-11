@@ -149,14 +149,11 @@ class ResearchAgent:
         # Use the content analysis prompt from centralized prompts
         analysis_prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPTS["content_analysis"]),
-            ("user", USER_PROMPTS["content_analysis"].format(
-                query=query,
-                content=content_text
-            ))
+            ("user", USER_PROMPTS["content_analysis"])
         ])
         
         analysis_chain = analysis_prompt | self.llm | StrOutputParser()
-        analysis = await analysis_chain.ainvoke({})
+        analysis = await analysis_chain.ainvoke({"query": query, "content": content_text})
         
         return {
             "analysis": analysis,

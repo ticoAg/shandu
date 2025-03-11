@@ -2,6 +2,8 @@
 Content processing utilities for research agents.
 Contains functionality for handling search results, extracting content, and analyzing information.
 """
+
+import os
 from typing import List, Dict, Optional, Any, Union, TypedDict, Sequence
 from dataclasses import dataclass
 import json
@@ -13,6 +15,7 @@ from rich.console import Console
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
 from ...search.search import SearchResult
 from ...scraper import WebScraper, ScrapedContent
@@ -41,183 +44,224 @@ class AgentState(TypedDict):
     enhanced_report: str
     final_report: str
 
+# Structured output models
+class UrlRelevanceResult(BaseModel):
+    """Structured output for URL relevance check."""
+    is_relevant: bool = Field(description="Whether the URL is relevant to the query")
+    reason: str = Field(description="Reason for the relevance decision")
+
+class ContentRating(BaseModel):
+    """Structured output for content reliability rating."""
+    rating: str = Field(description="Reliability rating: HIGH, MEDIUM, or LOW")
+    justification: str = Field(description="Justification for the rating")
+    extracted_content: str = Field(description="Extracted relevant content from the source")
+
+class ContentAnalysis(BaseModel):
+    """Structured output for content analysis."""
+    key_findings: List[str] = Field(description="List of key findings from the content")
+    main_themes: List[str] = Field(description="Main themes identified in the content")
+    analysis: str = Field(description="Comprehensive analysis of the content")
+    source_evaluation: str = Field(description="Evaluation of the sources' credibility and relevance")
+
 async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, query: str) -> bool:
     """
-    Check if a URL is relevant to the query using heuristics and LLM.
-    
-    Args:
-        llm: The language model to use
-        url: URL to evaluate
-        title: Title of the page
-        snippet: Snippet or description of the page
-        query: Original query
-        
-    Returns:
-        True if relevant, False otherwise
+    Check if a URL is relevant to the query using structured output.
     """
     # First use simple heuristics to avoid LLM calls for obviously irrelevant domains
-    irrelevant_domains = ["pinterest", "instagram", "facebook", "twitter", "youtube", "tiktok",
-                         "reddit", "quora", "linkedin", "amazon.com", "ebay.com", "etsy.com",
-                         "walmart.com", "target.com"]
+    irrelevant_domains = [
+        "pinterest", "instagram", "facebook", "twitter", "youtube", "tiktok",
+        "reddit", "quora", "linkedin", "amazon.com", "ebay.com", "etsy.com",
+        "walmart.com", "target.com"
+    ]
     if any(domain in url.lower() for domain in irrelevant_domains):
         return False
-    
+
+    # Use structured output for relevance check
+    structured_llm = llm.with_structured_output(UrlRelevanceResult)
+    system_prompt = (
+        "You are evaluating search results for relevance to a specific query.\n\n"
+        "DETERMINE if the search result is RELEVANT or NOT RELEVANT to answering the query.\n"
+        "Consider the title, URL, and snippet to make your determination.\n\n"
+        "Provide a structured response with your decision and reasoning.\n"
+    )
+    user_content = (
+        f"Query: {query}\n\n"
+        f"Search Result:\nTitle: {title}\nURL: {url}\nSnippet: {snippet}\n\n"
+        "Is this result relevant to the query?"
+    )
+    # Build the prompt chain by piping the prompt into the structured LLM.
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are evaluating search results for relevance to a specific query.
-        
-        DETERMINE if the search result is RELEVANT or NOT RELEVANT to answering the query.
-        
-        Output ONLY "RELEVANT" or "NOT RELEVANT" based on your analysis.
-        """),
-        ("user", """Query: {query}
-        
-        Search Result:
-        Title: {title}
-        URL: {url}
-        Snippet: {snippet}
-        
-        Is this result relevant to the query? Answer with ONLY "RELEVANT" or "NOT RELEVANT".
-        """)
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content}
     ])
-    chain = prompt | llm | StrOutputParser()
-    result = await chain.ainvoke({"query": query, "title": title, "url": url, "snippet": snippet})
-    return "RELEVANT" in result.upper()
+    mapping = {"query": query, "title": title, "url": url, "snippet": snippet}
+    try:
+        # Chain the prompt and structured LLM; then call invoke with the mapping
+        chain = prompt | structured_llm
+        result = await chain.ainvoke(mapping)
+        return result.is_relevant
+    except Exception as e:
+        console.print(f"[dim red]Error in structured relevance check: {str(e)}. Using simpler approach.[/dim red]")
+        current_file = os.path.basename(__file__)
+        with open('example.txt', 'a') as file:
+            file.write(f"Error in is_relevant_url by: {current_file}\n")
+            file.write("Prompt content:\n")
+            file.write(system_prompt + "\n")
+            file.write(user_content + "\n")
+            file.write(f"Error: {str(e)}\n\n")
+        # Fallback to non-structured approach
+        simple_prompt = (
+            f"Evaluate if this search result is RELEVANT or NOT RELEVANT to the query.\n"
+            "Answer with ONLY \"RELEVANT\" or \"NOT RELEVANT\".\n\n"
+            f"Query: {query}\n"
+            f"Title: {title}\n"
+            f"URL: {url}\n"
+            f"Snippet: {snippet}"
+        )
+        response = await llm.ainvoke(simple_prompt)
+        result_text = response.content
+        return "RELEVANT" in result_text.upper()
 
 async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: str, main_content: str) -> Dict[str, Any]:
     """
-    Process a scraped item to evaluate reliability and extract content.
-    
-    Args:
-        llm: The language model to use
-        item: The scraped content
-        subquery: The query used to find this content
-        main_content: The main extracted content
-        
-    Returns:
-        Dictionary with processed results
+    Process a scraped item to evaluate reliability and extract content using structured output.
     """
-    # Combined reliability evaluation and content extraction
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are analyzing web content for reliability and extracting the most relevant information.
-        
-        First, evaluate the RELIABILITY of the content using these criteria:
-        1. Source credibility and expertise
-        2. Evidence quality
-        3. Consistency with known facts
-        4. Publication date recency
-        5. Presence of citations or references
-        
-        Rate the source as "HIGH", "MEDIUM", or "LOW" reliability with a brief explanation.
-        
-        Then, EXTRACT the most relevant and valuable content related to the query.
-        
-        Format your response as:
-        RELIABILITY: HIGH/MEDIUM/LOW (brief justification)
-        
-        EXTRACTED_CONTENT: 
-        [Extracted content here - organized, focused on key facts and details]
-        """),
-        ("user", """Analyze this web content:
-        
-        URL: {url}
-        Title: {title}
-        Query: {query}
-        
-        Content:
-        {content}
-        """)
-    ])
-    
-    chain = prompt | llm
-    result = await chain.ainvoke({
-        "url": item.url, 
-        "title": item.title, 
-        "query": subquery,
-        "content": main_content[:8000]
-    })
-    
-    # Parse the combined response
-    response_text = result.content
-    reliability_section = ""
-    content_section = ""
-    
-    if "RELIABILITY:" in response_text and "EXTRACTED_CONTENT:" in response_text:
-        parts = response_text.split("EXTRACTED_CONTENT:")
-        reliability_section = parts[0].replace("RELIABILITY:", "").strip()
-        content_section = parts[1].strip()
-    else:
-        # Fallback if format wasn't followed
-        reliability_section = "MEDIUM (Unable to parse reliability assessment)"
-        content_section = response_text
-    
-    # Extract rating
-    rating = "MEDIUM"
-    if "HIGH" in reliability_section.upper():
-        rating = "HIGH"
-    elif "LOW" in reliability_section.upper():
-        rating = "LOW"
-    
-    justification = reliability_section.replace("HIGH", "").replace("MEDIUM", "").replace("LOW", "").strip()
-    if justification.startswith("(") and justification.endswith(")"):
-        justification = justification[1:-1].strip()
-    
-    return {
-        "item": item,
-        "rating": rating,
-        "justification": justification,
-        "content": content_section
-    }
+    try:
+        structured_llm = llm.with_structured_output(ContentRating)
+        system_prompt = (
+            "You are analyzing web content for reliability and extracting the most relevant information.\n\n"
+            "Evaluate the RELIABILITY of the content using these criteria:\n"
+            "1. Source credibility and expertise\n"
+            "2. Evidence quality\n"
+            "3. Consistency with known facts\n"
+            "4. Publication date recency\n"
+            "5. Presence of citations or references\n\n"
+            "Rate the source as \"HIGH\", \"MEDIUM\", or \"LOW\" reliability with a brief justification.\n\n"
+            "Then, EXTRACT the most relevant and valuable content related to the query.\n"
+        )
+        user_message = (
+            f"Analyze this web content:\n\n"
+            f"URL: {item.url}\n"
+            f"Title: {item.title}\n"
+            f"Query: {subquery}\n\n"
+            "Content:\n"
+            f"{main_content[:8000]}  # Limit content length"
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ])
+        mapping = {"url": item.url, "title": item.title, "subquery": subquery}
+        # Chain the prompt with the structured LLM
+        chain = prompt | structured_llm
+        result = await chain.ainvoke(mapping)
+        return {
+            "item": item,
+            "rating": result.rating,
+            "justification": result.justification,
+            "content": result.extracted_content
+        }
+    except Exception as e:
+        console.print(f"[dim red]Error in structured content processing: {str(e)}. Using simpler approach.[/dim red]")
+        current_file = os.path.basename(__file__)
+        with open('example.txt', 'a') as file:
+            file.write(f"Error in process_scraped_item by: {current_file}\n")
+            file.write("Prompt content:\n")
+            file.write(system_prompt + "\n")
+            file.write(user_message + "\n")
+            file.write(f"Error: {str(e)}\n\n")
+        simple_prompt = (
+            f"Analyze web content for reliability (HIGH/MEDIUM/LOW) and extract relevant information.\n"
+            "Format your response as:\n"
+            "RELIABILITY: [rating]\n"
+            "JUSTIFICATION: [brief explanation]\n"
+            "EXTRACTED_CONTENT: [relevant content]\n\n"
+            f"URL: {item.url}\n"
+            f"Title: {item.title}\n"
+            f"Query: {subquery}\n\n"
+            "Content:\n"
+            f"{main_content[:5000]}"
+        )
+        response = await llm.ainvoke(simple_prompt)
+        content = response.content
+        rating = "MEDIUM"  # Default fallback rating
+        justification = ""
+        extracted_content = content
+
+        if "RELIABILITY:" in content:
+            reliability_match = re.search(r"RELIABILITY:\s*(HIGH|MEDIUM|LOW)", content)
+            if reliability_match:
+                rating = reliability_match.group(1)
+        if "JUSTIFICATION:" in content:
+            justification_match = re.search(r"JUSTIFICATION:\s*(.+?)(?=\n\n|EXTRACTED_CONTENT:|$)", content, re.DOTALL)
+            if justification_match:
+                justification = justification_match.group(1).strip()
+        if "EXTRACTED_CONTENT:" in content:
+            content_match = re.search(r"EXTRACTED_CONTENT:\s*(.+?)(?=$)", content, re.DOTALL)
+            if content_match:
+                extracted_content = content_match.group(1).strip()
+
+        return {
+            "item": item,
+            "rating": rating,
+            "justification": justification,
+            "content": extracted_content
+        }
 
 async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> str:
     """
-    Analyze content from multiple sources and synthesize the information.
-    
-    Args:
-        llm: The language model to use
-        subquery: The query that led to this content
-        content_text: Combined text from multiple sources
-        
-    Returns:
-        Analysis of the content
+    Analyze content from multiple sources and synthesize the information using structured output.
     """
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are analyzing and synthesizing information from multiple web sources.
-        
-        Your task is to:
-        1. Identify the most important and relevant information related to the query
-        2. Organize the information into a coherent analysis
-        3. Highlight key findings, points of consensus, and any contradictions
-        4. Maintain source attributions when presenting facts or claims
-        
-        Create a thorough, well-structured analysis that captures the most valuable insights.
-        """),
-        ("user", """Analyze the following content related to the query: "{query}"
-        
-        {content}
-        
-        Provide a comprehensive analysis that synthesizes the most relevant information
-        from these sources, organized into a well-structured format with key findings.
-        """)
-    ])
-    
-    # Use more tokens but with a timeout to avoid hanging
-    analysis_llm = llm.with_config({"max_tokens": 8192, "timeout": 180})
-    analysis_chain = prompt | analysis_llm
-    
     try:
-        analysis = analysis_chain.invoke({"query": subquery, "content": content_text})
-        
-        # Clean up any potential artifacts in the analysis
-        analysis_content = re.sub(r'Completed:.*?\n', '', analysis.content)
-        analysis_content = re.sub(r'Here are.*?search queries.*?\n', '', analysis_content)
-        analysis_content = re.sub(r'\*Generated on:.*?\*', '', analysis_content)
-        
-        # Replace the original content with cleaned content
-        return analysis_content
+        structured_llm = llm.with_structured_output(ContentAnalysis)
+        system_prompt = (
+            "You are analyzing and synthesizing information from multiple web sources.\n\n"
+            "Your task is to:\n"
+            "1. Identify the most important and relevant information related to the query\n"
+            "2. Extract key findings and main themes\n"
+            "3. Organize the information into a coherent analysis\n"
+            "4. Evaluate the credibility and relevance of the sources\n"
+            "5. Maintain source attributions when presenting facts or claims\n\n"
+            "Create a thorough, well-structured analysis that captures the most valuable insights.\n"
+        )
+        user_message = (
+            f"Analyze the following content related to the query: \"{subquery}\"\n\n"
+            f"{content_text}\n\n"
+            "Provide a comprehensive analysis that synthesizes the most relevant information "
+            "from these sources, organized into a well-structured format with key findings."
+        )
+        prompt = ChatPromptTemplate.from_messages([
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message}
+        ])
+        mapping = {"query": subquery}
+        # Chain the prompt with the structured LLM (using a modified config if needed)
+        chain = prompt | structured_llm.with_config({"timeout": 180})
+        result = await chain.ainvoke(mapping)
+        formatted_analysis = "### Key Findings\n\n"
+        for i, finding in enumerate(result.key_findings, 1):
+            formatted_analysis += f"{i}. {finding}\n"
+        formatted_analysis += "\n### Main Themes\n\n"
+        for i, theme in enumerate(result.main_themes, 1):
+            formatted_analysis += f"{i}. {theme}\n"
+        formatted_analysis += f"\n### Analysis\n\n{result.analysis}\n"
+        formatted_analysis += f"\n### Source Evaluation\n\n{result.source_evaluation}\n"
+        return formatted_analysis
     except Exception as e:
-        console.print(f"[dim red]Error in content analysis for {subquery}: {str(e)}. Using simpler analysis.[/dim red]")
-        # Fallback to simpler analysis with fewer tokens
-        simple_analysis_llm = llm.with_config({"max_tokens": 2048, "timeout": 60})
-        simple_analysis_chain = prompt | simple_analysis_llm
-        analysis = simple_analysis_chain.invoke({"query": subquery, "content": content_text[:5000]})
-        return analysis.content
+        console.print(f"[dim red]Error in structured content analysis: {str(e)}. Using simpler approach.[/dim red]")
+        current_file = os.path.basename(__file__)
+        with open('example.txt', 'a') as file:
+            file.write(f"Error in analyze_content by: {current_file}\n")
+            file.write("Prompt content:\n")
+            file.write(system_prompt + "\n")
+            file.write(user_message + "\n")
+            file.write(f"Error: {str(e)}\n\n")
+        simple_prompt = (
+            f"Analyze and synthesize information from multiple web sources.\n"
+            "Provide a concise but comprehensive analysis of the content related to the query.\n\n"
+            f"Analyze content related to: {subquery}\n\n"
+            f"{content_text[:5000]}"
+        )
+        simple_llm = llm.with_config({"timeout": 60})
+        response = await simple_llm.ainvoke(simple_prompt)
+        return response.content

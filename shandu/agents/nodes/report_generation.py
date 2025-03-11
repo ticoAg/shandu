@@ -5,6 +5,7 @@ import asyncio
 from rich.console import Console
 from rich.markdown import Markdown
 from langchain_core.messages import AIMessage
+from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState
 from ..processors.report_generator import (
     generate_title, 
@@ -13,9 +14,27 @@ from ..processors.report_generator import (
     enhance_report,
     expand_key_sections
 )
-from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback
+from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback, is_shutdown_requested
 
 console = Console()
+
+# Structured output models for report generation
+class ReportSection(BaseModel):
+    """Structured output for a report section."""
+    title: str = Field(description="Title of the section")
+    content: str = Field(description="Content of the section")
+
+class FinalReport(BaseModel):
+    """Structured output for the final report."""
+    title: str = Field(description="Title of the report")
+    sections: list[ReportSection] = Field(
+        description="List of report sections",
+        min_items=1
+    )
+    references: list[str] = Field(
+        description="List of references in the report",
+        min_items=0
+    )
 
 async def generate_initial_report_node(llm, include_objective, progress_callback, state: AgentState) -> AgentState:
     """Generate the initial report."""
@@ -56,6 +75,12 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
 
 async def enhance_report_node(llm, progress_callback, state: AgentState) -> AgentState:
     """Enhance the report."""
+    # Check if shutdown was requested
+    if is_shutdown_requested():
+        state["status"] = "Shutdown requested, skipping report enhancement"
+        log_chain_of_thought(state, "Shutdown requested, skipping report enhancement")
+        return state
+        
     state["status"] = "Enhancing report with additional detail"
     console.print("[bold blue]Enhancing report with additional depth and detail...[/]")
 
@@ -78,6 +103,12 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
 
 async def expand_key_sections_node(llm, progress_callback, state: AgentState) -> AgentState:
     """Expand key sections of the report."""
+    # Check if shutdown was requested
+    if is_shutdown_requested():
+        state["status"] = "Shutdown requested, skipping section expansion"
+        log_chain_of_thought(state, "Shutdown requested, skipping section expansion")
+        return state
+        
     state["status"] = "Expanding key sections for maximum depth"
     console.print("[bold blue]Expanding key sections for maximum depth using multi-step synthesis...[/]")
 
@@ -192,70 +223,6 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                 "title": source_meta.get("title", ""),
                 "snippet": source_meta.get("snippet", "")
             })
-        
-        # Use more specialized processing to handle long report generation in chunks
-        console.print("[bold blue]Generating research report in multiple chunks for better reliability...[/]")
-        
-        # Generate a good title first
-        report_title = await generate_title(llm, state['query'])
-        console.print(f"[bold green]Report Title: {report_title}[/]")
-        
-        # Create a structured outline first to guide the detailed content generation
-        outline_prompt = f"""Create a detailed outline for a comprehensive research report on {report_title}.
-        
-        The outline should have:
-        1. A clear introduction section
-        2. 5-7 main sections (use ## heading level)
-        3. 2-3 subsections for each main section (use ### heading level)
-        4. A conclusion section
-        5. References section
-        
-        DO NOT write any content - just create the structure with headings.
-        Start with '# {report_title}'"""
-        
-        outline_llm = llm.with_config({"temperature": 0.2})
-        outline = outline_llm.invoke(outline_prompt).content
-        console.print("[bold green]Generated outline structure[/]")
-        
-        # Extract sections from the outline to fill them in separately
-        sections = re.findall(r'(#+\s+.*?)(?=\n#+\s+|$)', outline, re.DOTALL)
-        
-        # Generate content for each section in chunks
-        full_report = []
-        for i, section in enumerate(sections):
-            section_title = section.strip().split('\n')[0]
-            console.print(f"[bold blue]Generating content for section {i+1}/{len(sections)}: {section_title}[/]")
-            
-            section_prompt = f"""Write a detailed, comprehensive section for this part of a research report on {report_title}:
-            
-            {section}
-            
-            Requirements:
-            - Write 800-1200 words of in-depth content for this section
-            - Include detailed analysis, examples, and supporting evidence
-            - Maintain academic tone and thorough coverage
-            - If this is a main section (##), create 2-3 subsections within it (###)
-            - If this is the references section, create 15-20 properly formatted references in [n] format
-            
-            ONLY write content for this specific section - do not rewrite the entire report.
-            START with the section heading exactly as shown above.
-            """
-            
-            # Generate content for this section
-            section_llm = llm.with_config({"temperature": 0.5})
-            try:
-                section_content = section_llm.invoke(section_prompt).content
-                
-                # Clean up section content
-                section_content = re.sub(r'^#+\s+.*?\n', f'{section_title}\n', section_content, count=1)
-                full_report.append(section_content)
-            except Exception as e:
-                console.print(f"[bold red]Error generating section {section_title}: {str(e)}[/]")
-                # Create a placeholder section if generation fails
-                full_report.append(f"{section_title}\n\nThis section content could not be generated.\n\n")
-        
-        # Combine all sections into a complete report
-        final_report = "\n\n".join(full_report)
 
     # Apply comprehensive cleanup of artifacts and unwanted sections
     final_report = re.sub(r'Completed:.*?\n', '', final_report)
