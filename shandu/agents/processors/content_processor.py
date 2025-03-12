@@ -102,14 +102,6 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
         return result.is_relevant
     except Exception as e:
         console.print(f"[dim red]Error in structured relevance check: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            file.write(f"Error in is_relevant_url by: {current_file}\n")
-            file.write("Prompt content:\n")
-            file.write(system_prompt + "\n")
-            file.write(user_content + "\n")
-            file.write(f"Error: {str(e)}\n\n")
-        # Fallback to non-structured approach
         simple_prompt = (
             f"Evaluate if this search result is RELEVANT or NOT RELEVANT to the query.\n"
             "Answer with ONLY \"RELEVANT\" or \"NOT RELEVANT\".\n\n"
@@ -164,12 +156,6 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
     except Exception as e:
         console.print(f"[dim red]Error in structured content processing: {str(e)}. Using simpler approach.[/dim red]")
         current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            file.write(f"Error in process_scraped_item by: {current_file}\n")
-            file.write("Prompt content:\n")
-            file.write(system_prompt + "\n")
-            file.write(user_message + "\n")
-            file.write(f"Error: {str(e)}\n\n")
         simple_prompt = (
             f"Analyze web content for reliability (HIGH/MEDIUM/LOW) and extract relevant information.\n"
             "Format your response as:\n"
@@ -249,13 +235,6 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
         return formatted_analysis
     except Exception as e:
         console.print(f"[dim red]Error in structured content analysis: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            file.write(f"Error in analyze_content by: {current_file}\n")
-            file.write("Prompt content:\n")
-            file.write(system_prompt + "\n")
-            file.write(user_message + "\n")
-            file.write(f"Error: {str(e)}\n\n")
         simple_prompt = (
             f"Analyze and synthesize information from multiple web sources.\n"
             "Provide a concise but comprehensive analysis of the content related to the query.\n\n"

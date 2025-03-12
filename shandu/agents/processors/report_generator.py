@@ -83,7 +83,7 @@ async def generate_title(llm: ChatOpenAI, query: str) -> str:
         """
         
         # Use a direct, simplified approach
-        simple_llm = llm.with_config({"temperature": 0.1})
+        simple_llm = llm.with_config({"temperature": 0.2})
         response = await simple_llm.ainvoke(direct_prompt)
         
         # Clean up any formatting
@@ -92,17 +92,17 @@ async def generate_title(llm: ChatOpenAI, query: str) -> str:
     except Exception as e:
         print(f"Error in structured title generation: {str(e)}. Using simpler approach.")
         current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
+        #with open('example.txt', 'a') as file:
             # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
+            #file.write(f'This line was written by: {current_file}\n')
+            #file.write(f'Error {e}.\n')
         # Fallback to non-structured approach
         simple_prompt = ChatPromptTemplate.from_messages([
             ("system", "Create a professional, concise title (8 words max) for a research report."),
             ("user", f"Topic: {query}")
         ])
         
-        simple_llm = llm.with_config({"temperature": 0.1})
+        simple_llm = llm.with_config({"temperature": 0.2})
         simple_chain = simple_prompt | simple_llm
         title = await simple_chain.ainvoke({})
         
@@ -118,7 +118,7 @@ async def extract_themes(llm: ChatOpenAI, findings: str) -> str:
     
     # Use a direct system prompt without template variables
     system_prompt = """You are analyzing research findings to identify key themes for a report structure.
-    Extract 4-7 major themes from the content that would make logical report sections.
+    Extract 4-7 major themes (dont mention word Theme)from the content that would make logical report sections.
     These themes should emerge naturally from the content rather than following a predetermined structure.
     For each theme, provide a brief description of what content would be included."""
     
@@ -139,10 +139,10 @@ async def extract_themes(llm: ChatOpenAI, findings: str) -> str:
         
         Format your response as:
         
-        ## Theme 1
+        ## Theme 1 (dont mention word Theme)
         Description of theme 1
         
-        ## Theme 2
+        ## Theme 2 (dont mention word Theme)
         Description of theme 2
         
         And so on. Each theme should have a clear, concise title and a brief description.
@@ -164,14 +164,14 @@ async def extract_themes(llm: ChatOpenAI, findings: str) -> str:
             ("system", """Extract 4-7 key themes from research findings that would make logical report sections.
             Format your response as:
             
-            ## Theme 1
+            ## Theme 1 (dont mention word Theme)
             Description of theme 1
             
-            ## Theme 2
-            Description of theme 2
+            ## Topic 2 (dont mention word Topic)
+            Description of topic 2
             
             And so on."""),
-            ("user", f"Extract themes from these findings:\n\n{findings[:10000]}")
+            ("user", f"Extract topics from these findings:\n\n{findings[:10000]}")
         ])
         
         simple_llm = llm.with_config({"temperature": 0.3})
@@ -221,15 +221,13 @@ async def format_citations(
             title = source_meta.get("title", citation_info.get("title", "Untitled"))
             date = source_meta.get("date", citation_info.get("date", "n.d."))
             
-            # Format the citation
-            citation = f"[{cid}] *{domain}*, \"{title}\", {date}, {url}"
+            citation = f"[{cid}] *{domain}*, \"{title}\", {url}"
             citations.append(citation)
         
         if citations:
             return "\n".join(citations)
     
-    # If no citation registry or no citations registered, fall back to formatting all selected sources
-    # Format the sources for citation
+
     sources_text = ""
     for i, url in enumerate(selected_sources, 1):
         # Find the source metadata if available
@@ -398,7 +396,8 @@ IMPORTANT: Begin your report with the exact title provided: "{report_title}" - d
     # Generate the initial detailed report
     try:
         # Direct non-structured approach to avoid errors
-        direct_prompt = f"""Create a comprehensive research report on this topic.
+        # Direct non-structured approach to avoid errors
+        direct_prompt = f"""Create an extremely comprehensive, detailed research report that is AT LEAST 5,000 words long.
 
 Title: {report_title}
 Analyzed Findings: {findings[:5000]}
@@ -415,26 +414,24 @@ REPORT REQUIREMENTS:
 - Create a dynamic structure based on the content themes rather than a rigid template.
 
 CITATION REQUIREMENTS:
-- ONLY use the citation IDs provided in the AVAILABLE SOURCES list above
+- ONLY use the citation IDs provided in the AVAILABLE SOURCES list
 - Format citations as [n] where n is the exact ID of the source
 - Place citations at the end of the relevant sentences or paragraphs
 - Do not make up your own citation numbers
 - Do not cite sources that aren't in the available sources list
 - Ensure each major claim or statistic has an appropriate citation
 
-FORMAT:
+FORMAT (IMPORTANT):
+- Always use full power of markdown (eg. tables for comparasions, links, citations, etc.)
 - Start with the title as a level 1 heading: "# {report_title}"
-- Include an executive summary
+- Include executive summary
 - Include an introduction
 - Include sections based on the key themes
 - Include a conclusion
 - Include references section
-
-DO NOT include a "Research Framework" or "Objective" section at the beginning.
 """
-        
-        # Use direct approach with higher token limit
-        report_llm = llm.with_config({"max_tokens": 16384, "temperature": 0.2})
+        # Use direct approach with maximum token limit for very long reports
+        report_llm = llm.with_config({"max_tokens": 32768, "temperature": 0.6})
         response = await report_llm.ainvoke(direct_prompt)
         
         return response.content
@@ -442,10 +439,10 @@ DO NOT include a "Research Framework" or "Objective" section at the beginning.
     except Exception as e:
         print(f"Error in structured report generation: {str(e)}. Using simpler approach.")
         current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
+        #with open('example.txt', 'a') as file:
             # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
+            #file.write(f'This line was written by: {current_file}\n')
+            #file.write(f'Error {e}.\n')
         # Fallback to simpler report generation without structured output
         simple_prompt = ChatPromptTemplate.from_messages([
             ("system", f"""Generate a comprehensive research report based on the provided findings.
@@ -454,7 +451,7 @@ DO NOT include a "Research Framework" or "Objective" section at the beginning.
             ("user", f"Title: {report_title}\n\nFindings: {augmented_findings[:10000]}")
         ])
         
-        simple_llm = llm.with_config({"max_tokens": 8192})
+        simple_llm = llm.with_config({"max_tokens": 16000, "temperature": 0.6})
         simple_chain = simple_prompt | simple_llm
         report = await simple_chain.ainvoke({})
         
@@ -476,7 +473,7 @@ async def enhance_report(
     
     # Extract the title from the initial report to ensure consistency
     title_match = re.match(r'# ([^\n]+)', initial_report)
-    original_title = title_match.group(1) if title_match else "AI in Medicine"
+    original_title = title_match.group(1) if title_match else "xxx"
     
     # Extract all sections to preserve structure
     section_pattern = re.compile(r'(#+\s+[^\n]+)(\n\n[^#]+?)(?=\n#+\s+|\Z)', re.DOTALL)
@@ -573,6 +570,9 @@ async def expand_key_sections(
     if not report or len(report.strip()) < 1000:
         return report
     
+    # Clean any potentially harmful PDF-style tags before starting
+    report = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', report)
+    
     # Extract sections from the report using a more robust pattern
     section_pattern = re.compile(r'(## [^\n]+)(\n\n[^#]+?)(?=\n##|\Z)', re.DOTALL)
     sections = section_pattern.findall(report)
@@ -652,7 +652,8 @@ Return the expanded section with the exact same heading but with expanded conten
             
             # Clean up any potential markup errors
             expanded_content = response.content
-            expanded_content = re.sub(r'\[/[^\]]*\]', '', expanded_content)  # Remove any malformed closing tags
+            # More thorough cleanup of any PDF/markup tags
+            expanded_content = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', expanded_content)
             
             # Ensure the section starts with the original header
             if not expanded_content.strip().startswith(section_header.strip()):

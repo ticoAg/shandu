@@ -7,15 +7,6 @@ from typing import Callable, Any, Awaitable, TypeVar
 T = TypeVar('T')
 
 def create_node_wrapper(async_fn: Callable[..., Awaitable[T]]) -> Callable[..., T]:
-    """
-    Create a wrapper function that properly handles async functions for LangGraph nodes.
-    
-    Args:
-        async_fn: The async function to wrap
-        
-    Returns:
-        A synchronous function that calls the async function
-    """
     def wrapped_function(*args, **kwargs):
         try:
             # Check if we're already in an event loop

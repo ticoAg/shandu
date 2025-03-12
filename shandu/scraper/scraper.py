@@ -42,7 +42,7 @@ class ScrapedContent:
 class WebScraper:
     """Web scraper for extracting content from web pages using WebBaseLoader."""
     
-    def __init__(self, proxy: Optional[str] = None, timeout: int = 30):
+    def __init__(self, proxy: Optional[str] = None, timeout: int = 10):
         """
         Initialize the web scraper.
         
@@ -137,7 +137,7 @@ class WebScraper:
                         await browser.close()
                         
                         # Parse the HTML with BeautifulSoup
-                        soup = BeautifulSoup(html_content, "html.parser")
+                        soup = BeautifulSoup(html_content, "lxml")
                         
                         # Extract metadata
                         metadata = self._extract_metadata(soup, url)
@@ -180,8 +180,7 @@ class WebScraper:
             
             # Get the page content
             text_content = document.page_content
-            with open('example.txt', 'a') as file:
-                file.write(f'Text content: {text_content}\n')
+            
             # Split long content for better processing
             if len(text_content) > 10000:
                 text_splitter = RecursiveCharacterTextSplitter(
@@ -191,8 +190,16 @@ class WebScraper:
                 )
                 chunks = text_splitter.split_text(text_content)
                 text_content = "\n\n".join(chunks[:3])  # Use first 3 chunks
-                with open('example.txt', 'a') as file:
-                    file.write(f'Long: {text_content}\n')
+            
+            # Clean up excessive whitespace
+            text_content = re.sub(r'\n{3,}', '\n\n', text_content)
+            text_content = re.sub(r'\s{2,}', ' ', text_content)
+            
+            # Remove problematic patterns that could conflict with Rich markup
+            # This prevents issues when this text is displayed in the console
+            text_content = re.sub(r'\[\]', ' ', text_content)  # Empty brackets
+            text_content = re.sub(r'\[\/?[^\]]*\]?', ' ', text_content)  # Incomplete/malformed tags
+            text_content = re.sub(r'\[[^\]]*\]', ' ', text_content)  # Any bracketed content
 
             # Get HTML content if available
             html_content = ""
@@ -202,7 +209,7 @@ class WebScraper:
             # Get title from metadata or extract from HTML
             title = metadata.get("title", "")
             if not title and html_content:
-                soup = BeautifulSoup(html_content, "html.parser")
+                soup = BeautifulSoup(html_content, "lxml")
                 title_tag = soup.find("title")
                 if title_tag:
                     title = title_tag.text.strip()
@@ -253,26 +260,52 @@ class WebScraper:
         return metadata
     
     def _extract_main_content(self, soup: BeautifulSoup) -> str:
-        """Extract the main content from a BeautifulSoup object."""
-        # Try to find main content containers
-        main_tags = soup.find_all(["main", "article", "div", "section"], class_=lambda c: c and any(x in str(c).lower() for x in ["content", "main", "article", "body"]))
+        """
+        Extract the main content from a BeautifulSoup object.
         
+        This function tries to identify the main content area of a webpage
+        and returns its text content with consistent formatting.
+        """
+        # First, try to remove common noise elements
+        for noise_tag in soup.select('nav, header, footer, aside, .menu, .sidebar, .navigation, .ad, .advertisement, script, style, [role="banner"], [role="navigation"]'):
+            if noise_tag:
+                noise_tag.decompose()
+                
+        # Try to find main content containers
+        main_tags = soup.find_all(
+            ["main", "article", "div", "section"], 
+            class_=lambda c: c and any(x in str(c).lower() for x in [
+                "content", "main", "article", "body", "entry", "post", "text"
+            ])
+        )
+        
+        content = ""
         if main_tags:
             # Use the largest content container
-            main_tag = max(main_tags, key=lambda tag: len(tag.get_text()))
+            main_tag = max(main_tags, key=lambda tag: len(tag.get_text(strip=True)))
             content = main_tag.get_text(separator="\n", strip=True)
-            
-            # Clean up the content
-            content = re.sub(r'\n{3,}', '\n\n', content)
-            return content
+        else:
+            # If no main content container found, use the body
+            body = soup.find("body")
+            if body:
+                content = body.get_text(separator="\n", strip=True)
+            else:
+                # If no body found, use the entire HTML
+                content = soup.get_text(separator="\n", strip=True)
         
-        # If no main content container found, use the body
-        body = soup.find("body")
-        if body:
-            return body.get_text(separator="\n", strip=True)
+        # Thorough cleanup of the content
+        # Remove repetitive headers/footers
+        content = re.sub(r'([^\n]+)(\n\1)+', r'\1', content)
         
-        # If no body found, use the entire HTML
-        return soup.get_text(separator="\n", strip=True)
+        # Normalize whitespace 
+        content = re.sub(r'\n{3,}', '\n\n', content)  # Replace 3+ newlines with 2
+        content = re.sub(r'\s{2,}', ' ', content)     # Replace multiple spaces with 1
+        
+        # Remove very short lines that are likely menu items or noise
+        content_lines = [line for line in content.split('\n') if len(line.strip()) > 3]
+        content = '\n'.join(content_lines)
+        
+        return content.strip()
     
     async def scrape_urls(self, urls: List[str], dynamic: bool = False) -> List[ScrapedContent]:
         """

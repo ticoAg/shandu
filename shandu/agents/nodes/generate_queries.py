@@ -67,12 +67,6 @@ Return ONLY the search queries themselves, one per line, with no additional text
         
     except Exception as e:
         console.print(f"[dim red]Error in structured query generation: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
-        # Fallback to non-structured approach
         try:
             # Even simpler fallback approach
             response = await llm.ainvoke(f"Generate {state['breadth']} simple search queries for {state['query']}. Return only the queries, one per line.")
@@ -98,7 +92,6 @@ Return ONLY the search queries themselves, one per line, with no additional text
                 f"{state['query']} applications"
             ][:state["breadth"]]
     
-    # Ensure we have at least one query if possible
     if not new_queries and state["query"]:
         new_queries = [state["query"]]
     

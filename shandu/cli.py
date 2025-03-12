@@ -9,12 +9,14 @@ import asyncio
 import time
 import signal
 import threading
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import click
 from rich.console import Console
 from rich.panel import Panel
 from rich.tree import Tree
+from rich.markup import escape
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich.markdown import Markdown
 from rich.live import Live
@@ -37,6 +39,46 @@ console = Console()
 # Global flag for force exit
 _force_exit_requested = False
 _force_exit_lock = threading.Lock()
+
+def sanitize_markup(text):
+    """
+    Universal sanitizer for any text that will be displayed using Rich.
+    
+    This function prevents any square bracket content from being interpreted as
+    Rich markup tags. It can be used on any text that will be displayed in the console.
+    
+    Args:
+        text: The text to sanitize
+        
+    Returns:
+        Sanitized text safe for Rich console display
+    """
+    # Convert to string if it's not already
+    text_str = str(text)
+    
+    # Step 1: Remove empty brackets which can be interpreted as empty tags
+    text_str = re.sub(r'\[\]', '', text_str)
+    
+    # Step 2: Remove any PDF-style tags that often cause problems with Rich
+    text_str = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', text_str)
+    
+    # Step 3: Remove any orphaned or malformed tags
+    text_str = re.sub(r'\[\/?[^\]]*\]?', '', text_str)
+    
+    # Step 4: Remove all remaining square bracket content that could be misinterpreted
+    text_str = re.sub(r'\[[^\]]*\]', '', text_str)
+    
+    # Step 5: Escape the entire string to handle any other Rich markup characters
+    return escape(text_str)
+
+def sanitize_error(error_msg):
+    """
+    Sanitize error messages to prevent Rich markup errors.
+    
+    This function removes all potential Rich markup from error messages
+    to prevent rendering errors in the console.
+    """
+    return sanitize_markup(error_msg)
 
 def setup_force_exit_handler():
     """Set up a force exit handler for the CLI."""
@@ -237,7 +279,7 @@ def clean(force: bool, cache_only: bool):
                                    title="Success", 
                                    border_style="green"))
             except Exception as e:
-                console.print(f"[red]Error deleting cache files: {e}[/]")
+                console.print(f"[red]Error deleting cache files: {sanitize_error(e)}[/]")
         else:
             console.print("[yellow]No cache files found.[/]")
     else:
@@ -254,7 +296,7 @@ def clean(force: bool, cache_only: bool):
                                title="Success", 
                                border_style="green"))
         except Exception as e:
-            console.print(f"[red]Error deleting configuration: {e}[/]")
+            console.print(f"[red]Error deleting configuration: {sanitize_error(e)}[/]")
 
 @cli.command()
 @click.argument("query")
@@ -352,7 +394,9 @@ def research(
                 console.print("\n[yellow]Research interrupted by user.[/]")
                 sys.exit(0)
             except Exception as e:
-                console.print(f"\n[red]Error during research: {e}[/]")
+                # Use the universal sanitizer for the error message
+                error_msg = sanitize_markup(str(e))
+                console.print(f"\n[red]Error during research: {error_msg}[/]")
                 sys.exit(1)
     else:
         # Use agent-based research
@@ -381,7 +425,7 @@ def research(
                 console.print("\n[yellow]Research interrupted by user.[/]")
                 sys.exit(0)
             except Exception as e:
-                console.print(f"\n[red]Error during research: {e}[/]")
+                console.print(f"\n[red]Error during research: {sanitize_error(e)}[/]")
                 sys.exit(1)
     
     # Display result
@@ -440,9 +484,8 @@ def aisearch(query: str, engines: Optional[str], max_results: int, output: Optio
         try:
             result = ai_searcher.search_sync(query, engine_list, detailed)
             progress.update(task, completed=1)
-            
         except Exception as e:
-            console.print(f"[red]Error during AI search: {e}[/]")
+            console.print(f"[red]Error during AI search: {sanitize_error(e)}[/]")
             sys.exit(1)
     
     # Display result
@@ -485,7 +528,7 @@ def search(query: str, engines: Optional[str], max_results: int):
             progress.update(task, completed=1)
             
         except Exception as e:
-            console.print(f"[red]Error during search: {e}[/]")
+            console.print(f"[red]Error during search: {sanitize_error(e)}[/]")
             sys.exit(1)
     
     console.print(f"\n[bold green]Found {len(results)} results:[/]")
@@ -533,7 +576,7 @@ def scrape(url: str, dynamic: bool):
             progress.update(task, completed=1)
             
         except Exception as e:
-            console.print(f"[red]Error during scraping: {e}[/]")
+            console.print(f"[red]Error during scraping: {sanitize_error(e)}[/]")
             sys.exit(1)
     
     if result.is_successful():

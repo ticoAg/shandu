@@ -109,10 +109,10 @@ INSTRUCTIONS:
         except Exception as e:
             console.print(f"[dim red]Error in structured source selection: {str(e)}. Using simpler approach.[/dim red]")
             current_file = os.path.basename(__file__)
-            with open('example.txt', 'a') as file:
+            #with open('example.txt', 'a') as file:
                 # Append the current file's name and some text
-                file.write(f'This line was written by: {current_file}\n')
-                file.write(f'Error {e}.\n')
+                #file.write(f'This line was written by: {current_file}\n')
+                #file.write(f'Error {e}.\n')
 
             # Fallback to non-structured approach
             try:

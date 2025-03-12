@@ -9,7 +9,6 @@ from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback
 
 console = Console()
 
-# Structured output model for citations
 class FormattedCitations(BaseModel):
     """Structured output for formatted citations."""
     citations: list[str] = Field(
@@ -27,7 +26,6 @@ async def format_citations_node(llm, progress_callback, state: AgentState) -> Ag
         log_chain_of_thought(state, "No sources selected for citations")
         return state
     
-    # Use the format_citations function from processors
     formatted_citations = await format_citations(llm, selected_urls, state["sources"])
     
     state["formatted_citations"] = formatted_citations

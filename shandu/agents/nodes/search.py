@@ -40,7 +40,6 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
     Returns:
         Updated agent state
     """
-    # Check if shutdown was requested
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping search"
         log_chain_of_thought(state, "Shutdown requested, skipping search")
@@ -48,15 +47,12 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
     
     state["status"] = f"Searching for information (Depth {state['current_depth']})"
     
-    # Get the most recent subqueries based on breadth
     breadth = state["breadth"]
     if len(state["subqueries"]) > 0:
         recent_queries = state["subqueries"][-breadth:]
     else:
-        # If no subqueries, use the main query
         recent_queries = [state["query"]]
     
-    # Process each query
     for query_idx, query in enumerate(recent_queries):
         if is_shutdown_requested():
             log_chain_of_thought(state, f"Shutdown requested, stopping search after {query_idx} queries")
@@ -93,24 +89,19 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
                     "query": query
                 })
         
-        # If no relevant URLs, continue to next query
         if not relevant_urls:
             log_chain_of_thought(state, f"No relevant URLs found for '{query}'")
             continue
         
-        # Limit to top 5 results to avoid too many requests
         relevant_urls = relevant_urls[:5]
         
         # Scrape the relevant URLs
         urls_to_scrape = [result.url for result in relevant_urls]
         
-        # Process in batches to avoid overwhelming the server
         batch_size = 3
         
-        # Ensure batch_size is at least 1
         batch_size = max(1, batch_size)
         
-        # Calculate number of batches, ensuring we don't divide by zero
         if len(urls_to_scrape) > 0 and batch_size > 0:
             num_batches = (len(urls_to_scrape) + batch_size - 1) // batch_size
         else:
@@ -124,7 +115,6 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
                 log_chain_of_thought(state, f"Shutdown requested, stopping scraping after {len(scraped_contents)} URLs")
                 break
                 
-            # Get the current batch
             batch = urls_to_scrape[i:i+batch_size]
             
             # Scrape the batch
@@ -144,41 +134,32 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
             console.print(f"Analyzing page: {item.title}")
             console.print(f"URL: {item.url}")
             
-            # Extract a preview of the content
             content_preview = item.text[:200] + "..." if len(item.text) > 200 else item.text
             console.print(f"Extracted Content: {content_preview}")
             
-            # Process the scraped item
             processed_item = await process_scraped_item(llm, item, query, item.text)
             processed_items.append(processed_item)
         
-        # If no processed items, continue to next query
         if not processed_items:
             log_chain_of_thought(state, f"No content could be extracted from URLs for '{query}'")
             continue
         
-        # Combine the processed content for analysis
         combined_content = "\n\n".join([f"Source: {item['item'].url}\nTitle: {item['item'].title}\nContent: {item['content']}" for item in processed_items])
         
-        # Analyze the combined content
         analysis = await analyze_content(llm, query, combined_content)
         
-        # Add the analysis to the state
         state["content_analysis"].append({
             "query": query,
             "sources": [item["item"].url for item in processed_items],
             "analysis": analysis
         })
         
-        # Add the analysis to the findings
         state["findings"] += f"\n\n## Analysis for: {query}\n\n{analysis}\n\n"
         
-        # Update progress
         log_chain_of_thought(state, f"Analyzed content for query: {query}")
         if progress_callback:
             await _call_progress_callback(progress_callback, state)
     
-    # Critical fix: Increment current_depth to prevent infinite loop
     state["current_depth"] += 1
     log_chain_of_thought(state, f"Completed depth {state['current_depth']} of {state['depth']}")
     

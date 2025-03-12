@@ -37,7 +37,6 @@ async def reflect_node(llm, progress_callback, state: AgentState) -> AgentState:
     console.print("[bold yellow]Reflecting on current findings...[/]")
     
     try:
-        # Use a completely direct approach to avoid template issues
         direct_prompt = f"""Analyze the following research findings and provide a detailed reflection. Today's date: {state['current_date']}
 
 Research Findings:
@@ -88,18 +87,15 @@ Format your response with clear section headings and bullet points for clarity.
             gaps_text = gaps_section.group(1).strip()
             knowledge_gaps = [line.strip().strip('-*').strip() for line in gaps_text.split('\n') if line.strip() and not line.strip().startswith('#')]
         
-        # Extract next steps
         steps_section = re.search(r'(?:next steps|steps|recommendations|future directions)(?:\s*:|\s*\n)([^#]*?)(?:#|$)', reflection_text.lower(), re.IGNORECASE | re.DOTALL)
         if steps_section:
             steps_text = steps_section.group(1).strip()
             next_steps = [line.strip().strip('-*').strip() for line in steps_text.split('\n') if line.strip() and not line.strip().startswith('#')]
         
-        # Extract summary
         summary_section = re.search(r'(?:overall reflection|reflection summary|summary|conclusion)(?:\s*:|\s*\n)([^#]*?)(?:#|$)', reflection_text.lower(), re.IGNORECASE | re.DOTALL)
         if summary_section:
             reflection_summary = summary_section.group(1).strip()
         
-        # Ensure we have content for each section
         if not key_insights:
             key_insights = ["Research is progressing on " + state['query']]
         if not knowledge_gaps:
@@ -130,15 +126,7 @@ Format your response with clear section headings and bullet points for clarity.
         
     except Exception as e:
         console.print(f"[dim red]Error in structured reflection: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
-
-        # Fallback to non-structured approach
         try:
-            # Even simpler fallback approach
             response = await llm.ainvoke(f"""Reflect on these research findings:
 
 {state['findings'][:2000]}
@@ -158,7 +146,6 @@ Include:
         except Exception as e2:
             console.print(f"[dim red]Error in fallback reflection: {str(e2)}. Using minimal reflection.[/dim red]")
             
-            # Create a minimal reflection if all else fails
             minimal_reflection = "## Research Reflection\n\nThe research is progressing. Further investigation is needed to develop a more comprehensive understanding of the topic."
             
             state["messages"].append(HumanMessage(content="Analyzing current findings..."))

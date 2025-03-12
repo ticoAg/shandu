@@ -15,7 +15,6 @@ from ...prompts import SYSTEM_PROMPTS, USER_PROMPTS
 
 console = Console()
 
-# Structured output model for research plan
 class ResearchPlan(BaseModel):
     """Structured output for research plan."""
     objectives: list[str] = Field(
@@ -130,11 +129,6 @@ Format your response with clear section headings and bullet points for clarity. 
         
     except Exception as e:
         console.print(f"[dim red]Error in structured plan generation: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
         try:
             # Even simpler fallback approach
             response = await llm.ainvoke(f"""Create a research plan for: {state['query']}
@@ -148,7 +142,6 @@ Include:
 Keep it concise and practical.
 """)
             
-            # Clean up any markdown formatting that might have been included
             cleaned_plan = response.content.replace("**", "").replace("# ", "").replace("## ", "")
             
             state["messages"].append(HumanMessage(content=f"Planning research on: {state['query']}"))
@@ -157,7 +150,6 @@ Keep it concise and practical.
         except Exception as e2:
             console.print(f"[dim red]Error in fallback plan generation: {str(e2)}. Using minimal plan.[/dim red]")
             
-            # Create a minimal plan if all else fails
             minimal_plan = f"Research plan for: {state['query']}\n\n- Investigate key aspects\n- Analyze relevant sources\n- Synthesize findings"
             
             state["messages"].append(HumanMessage(content=f"Planning research on: {state['query']}"))

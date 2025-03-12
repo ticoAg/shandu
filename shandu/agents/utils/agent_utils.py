@@ -12,6 +12,7 @@ from datetime import datetime
 from rich.console import Console
 from rich.tree import Tree
 from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.markup import escape
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
@@ -125,8 +126,16 @@ def log_chain_of_thought(state: AgentState, thought: str) -> None:
         state: The current agent state
         thought: The thought to log
     """
+    # Sanitize the thought to prevent Rich markup issues
+    sanitized_thought = thought
+    # Remove any square brackets that could be misinterpreted as markup
+    sanitized_thought = re.sub(r'\[[^\]]*\]', '', sanitized_thought)
+    # Remove any orphaned brackets or tags
+    sanitized_thought = re.sub(r'\[\/?[^\]]*\]?', '', sanitized_thought)
+    sanitized_thought = re.sub(r'\[\]', '', sanitized_thought)
+    
     timestamp = datetime.now().strftime("%H:%M:%S")
-    state["chain_of_thought"].append(f"[{timestamp}] {thought}")
+    state["chain_of_thought"].append(f"[{timestamp}] {sanitized_thought}")
 
 def display_research_progress(state: AgentState) -> Tree:
     """
@@ -141,7 +150,11 @@ def display_research_progress(state: AgentState) -> Tree:
     elapsed_time = time.time() - state["start_time"]
     minutes, seconds = divmod(int(elapsed_time), 60)
     
-    status = state["status"]
+    # Sanitize status to prevent markup errors
+    status_raw = state["status"]
+    status = re.sub(r'\[[^\]]*\]', '', status_raw)  # Remove any potential markup
+    status = escape(status)  # Escape any remaining characters
+    
     phase = "Research" if "depth" in status.lower() or any(word in status.lower() for word in ["searching", "querying", "reflecting", "analyzing"]) else "Report Generation"
     
     tree = Tree(f"[bold blue]{phase} Progress: {status}")
@@ -156,14 +169,23 @@ def display_research_progress(state: AgentState) -> Tree:
         stats_node.add(f"[blue]Sources Found:[/] {len(state['sources'])}")
         stats_node.add(f"[blue]Subqueries Explored:[/] {len(state['subqueries'])}")
         
-        # Show current research paths
+        # Show current research paths - with safety checks
         if state["subqueries"]:
             queries_node = tree.add("[green]Current Research Paths")
             # Safely get the last N queries based on breadth
             breadth = max(1, state.get("breadth", 1))  # Ensure breadth is at least 1
-            if len(state["subqueries"]) > 0:
-                for query in state["subqueries"][-breadth:]:
-                    queries_node.add(query)
+            
+            # Limit to actual number of queries available
+            display_count = min(breadth, len(state["subqueries"]))
+            
+            if display_count > 0:
+                for i in range(-display_count, 0):  # Get the last 'display_count' elements
+                    if i + len(state["subqueries"]) >= 0:  # Safety check
+                        query_text = state["subqueries"][i]
+                        # Sanitize the query text
+                        query_text = re.sub(r'\[[^\]]*\]', '', query_text)
+                        query_text = escape(query_text)
+                        queries_node.add(query_text)
     else:
         # Display report generation specific stats
         stats_node.add(f"[blue]Sources Selected:[/] {len(state.get('selected_sources', []))}")
@@ -193,7 +215,16 @@ def display_research_progress(state: AgentState) -> Tree:
         sections = state["findings"].split("\n\n")
         for section in sections[-2:]:
             if section.strip():
-                findings_node.add(section.strip()[:100] + "..." if len(section.strip()) > 100 else section.strip())
+                # Sanitize findings text to prevent markup errors
+                section_text = section.strip()[:100] + "..." if len(section.strip()) > 100 else section.strip()
+                # Remove any square brackets that could be misinterpreted as markup
+                section_text = re.sub(r'\[[^\]]*\]', '', section_text)
+                # Remove any orphaned brackets or tags
+                section_text = re.sub(r'\[\/?[^\]]*\]?', '', section_text)
+                section_text = re.sub(r'\[\]', '', section_text)
+                # Escape any remaining characters that could be misinterpreted
+                section_text = escape(section_text)
+                findings_node.add(section_text)
     
     # Show shutdown status if requested
     if is_shutdown_requested():
@@ -209,6 +240,10 @@ async def _call_progress_callback(callback: Optional[Callable], state: AgentStat
         callback: The callback function
         state: The current agent state
     """
+    # Sanitize state values that will be displayed to prevent Rich markup errors
+    if "status" in state:
+        state["status"] = escape(re.sub(r'\[[^\]]*\]', '', state["status"]))
+    
     if callback:
         try:
             if asyncio.iscoroutinefunction(callback):
@@ -216,7 +251,12 @@ async def _call_progress_callback(callback: Optional[Callable], state: AgentStat
             else:
                 callback(state)
         except Exception as e:
-            console.print(f"[dim red]Error in progress callback: {str(e)}[/dim red]")
+            # Sanitize the error message before displaying
+            error_msg = str(e)
+            error_msg = re.sub(r'\[[^\]]*\]', '', error_msg)
+            error_msg = re.sub(r'\[\/?[^\]]*\]?', '', error_msg)
+            error_msg = escape(error_msg)
+            console.print(f"[dim red]Error in progress callback: {error_msg}[/dim red]")
 
 # Structured output model for query clarification
 class ClarificationQuestions(BaseModel):
@@ -284,12 +324,6 @@ These questions must seek to clarify the exact focal points, the depth of detail
             questions = []
     except Exception as e:
         console.print(f"[dim red]Error in structured question generation: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
-            # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
-        # Fallback to non-structured approach
         try:
             # Direct approach without structured output
             response = await llm.ainvoke(f"Generate 3 direct clarifying questions for the research query: {query}")
@@ -357,11 +391,11 @@ REQUIREMENTS:
         refined_context = re.sub(r'Based on our discussion.*?(?=\.)\.', '', refined_context, flags=re.IGNORECASE)
     except Exception as e:
         console.print(f"[dim red]Error in structured query refinement: {str(e)}. Using simpler approach.[/dim red]")
-        current_file = os.path.basename(__file__)
-        with open('example.txt', 'a') as file:
+        #current_file = os.path.basename(__file__)
+        #with open('example.txt', 'a') as file:
             # Append the current file's name and some text
-            file.write(f'This line was written by: {current_file}\n')
-            file.write(f'Error {e}.\n')
+            #file.write(f'This line was written by: {current_file}\n')
+            #file.write(f'Error {e}.\n')
         # Fallback to non-structured approach
         try:
             # Direct approach without structured output

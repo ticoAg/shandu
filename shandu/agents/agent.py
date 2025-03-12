@@ -33,10 +33,9 @@ class ResearchAgent:
         max_urls_per_query: int = 3,
         proxy: Optional[str] = None
     ):
-        # Initialize components
         self.llm = llm or ChatOpenAI(
             temperature=temperature,
-            model="gpt-4"  # Using GPT-4 for better reasoning
+            model="gpt-4"
         )
         self.searcher = searcher or UnifiedSearcher()
         self.scraper = scraper or WebScraper(proxy=proxy)
@@ -189,7 +188,6 @@ class ResearchAgent:
             # Reflect on current findings
             reflection = await self._reflect_on_findings(context["findings"])
             
-            # Generate new subqueries based on reflection
             new_queries = await self._generate_subqueries(
                 query=query,
                 findings=context["findings"],
@@ -197,9 +195,7 @@ class ResearchAgent:
             )
             context["subqueries"].extend(new_queries)
             
-            # Search and analyze for each new query
             for subquery in new_queries:
-                # Use the agent to decide how to approach this subquery
                 agent_result = await self.agent.arun(
                     f"Research this specific aspect: {subquery}\n\n"
                     f"Current findings: {context['findings']}\n\n"

@@ -72,7 +72,7 @@ class AISearcher:
             api_key=api_key,
             model=model,
             temperature=0.4,
-            max_tokens=4096
+            max_tokens=8192
         )
         self.searcher = searcher or UnifiedSearcher(max_results=max_results)
         self.scraper = scraper or WebScraper()
@@ -127,7 +127,7 @@ class AISearcher:
                                 main_content = await self.scraper.extract_main_content(scraped)
                             if "unexpected error" in main_content.lower():
                                 continue
-                            preview = main_content[:1500] + ("...(truncated)" if len(main_content) > 1500 else "")
+                            preview = main_content[:500] + ("...(truncated)" if len(main_content) > 1500 else "")
                             sources.append({
                                 "title": scraped.title,
                                 "url": scraped.url,
@@ -137,17 +137,22 @@ class AISearcher:
                         except Exception as e:
                             print(f"Error processing scraped content from {scraped.url}: {e}")
         
-        # Build aggregated text with numbered sources
+        # Prepare sources with improved citation format
         aggregated_text = ""
         for i, source in enumerate(sources, 1):
+            # Extract domain from URL
+            url = source.get('url', '')
+            domain = url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source"
+            # Capitalize first letter of domain for a more professional look
+            domain_name = domain.split('.')[0].capitalize() if '.' in domain else domain
+            
             aggregated_text += (
-                f"[{i}] Source: {source['source']}\n"
-                f"Title: {source['title']}\n"
-                f"URL: {source['url']}\n"
-                f"Snippet: {source['snippet']}\n\n"
+                f"[{i}] {domain_name}\n"
+                f"Title: {source.get('title', 'Untitled')}\n"
+                f"URL: {url}\n"
+                f"Snippet: {source.get('snippet', '')}\n\n"
             )
         
-        # Construct prompt with current date and detail level
         current_date = timestamp.strftime('%Y-%m-%d')
         if detailed:
             detail_instruction = (
@@ -165,6 +170,8 @@ class AISearcher:
 - Use bullet points or numbered lists to organize information clearly.
 - If there are conflicting views or uncertainties, discuss them explicitly.
 - When providing information, cite the source by using the number in square brackets, like [1], to indicate where the information was sourced.
+- ONLY use the citation numbers provided in the sources below.
+- DO NOT include years or dates in your citations, just use the bracketed number like [1].
 - Ensure the response is engaging, detailed, and written in plain text suitable for all readers.
 
 Sources:

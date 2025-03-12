@@ -111,56 +111,40 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     return state
 
 async def enhance_report_node(llm, progress_callback, state: AgentState) -> AgentState:
-    """Enhance the report."""
+    """
+    Skip enhancement step to avoid duplicating content - this function now
+    just passes through the initial report to maintain pipeline compatibility.
+    """
     # Check if shutdown was requested
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping report enhancement"
         log_chain_of_thought(state, "Shutdown requested, skipping report enhancement")
         return state
-        
-    state["status"] = "Enhancing report with additional detail"
-    console.print("[bold blue]Enhancing report with additional depth and detail...[/]")
-
-    # Use the enhance_report function from processors
-    enhanced_report = await enhance_report(
-        llm, 
-        state["initial_report"], 
-        state["current_date"], 
-        state.get("formatted_citations", ""),
-        state.get("selected_sources", []),
-        state["sources"],
-        state.get("citation_registry")
-    )
     
-    state["enhanced_report"] = enhanced_report
-    log_chain_of_thought(state, "Enhanced report with additional depth and detail")
+    # Simply use the initial report without enhancement to avoid duplication issues
+    state["enhanced_report"] = state["initial_report"]
+    state["status"] = "Enhancement step skipped to preserve report structure"
+    log_chain_of_thought(state, "Enhancement step skipped to preserve report structure")
     
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
     return state
 
 async def expand_key_sections_node(llm, progress_callback, state: AgentState) -> AgentState:
-    """Expand key sections of the report."""
+    """
+    Skip expansion step to avoid duplicating content - this function now
+    just passes through the initial report to maintain pipeline compatibility.
+    """
     # Check if shutdown was requested
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping section expansion"
         log_chain_of_thought(state, "Shutdown requested, skipping section expansion")
         return state
-        
-    state["status"] = "Expanding key sections for maximum depth"
-    console.print("[bold blue]Expanding key sections for maximum depth using multi-step synthesis...[/]")
-
-    # Use the expand_key_sections function from processors
-    expanded_report = await expand_key_sections(
-        llm,
-        state["enhanced_report"],
-        state["identified_themes"],
-        state["current_date"],
-        state.get("citation_registry")
-    )
     
-    state["final_report"] = expanded_report
-    log_chain_of_thought(state, "Expanded key sections using multi-step synthesis")
+    # Simply use the enhanced report (which is the initial report) without expansion
+    state["final_report"] = state["enhanced_report"]
+    state["status"] = "Expansion step skipped to preserve report structure"
+    log_chain_of_thought(state, "Expansion step skipped to preserve report structure")
     
     if progress_callback:
         await _call_progress_callback(progress_callback, state)
@@ -217,28 +201,12 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         # Store the initial report
         state["initial_report"] = initial_report
         
-        # Enhance the report
-        enhanced_report = await enhance_report(
-            llm,
-            initial_report,
-            state['current_date'],
-            state.get('formatted_citations', ''),
-            state.get('selected_sources', []),
-            state['sources'],
-            state.get('citation_registry')
-        )
-        
-        # Store the enhanced report
+        # Skip enhancement and expansion steps to maintain consistent report structure
+        enhanced_report = initial_report
         state["enhanced_report"] = enhanced_report
         
-        # Expand key sections
-        final_report = await expand_key_sections(
-            llm,
-            enhanced_report,
-            extracted_themes,
-            state['current_date'],
-            state.get('citation_registry')
-        )
+        # Use the initial report directly as the final report
+        final_report = initial_report
         
         # Get the sources that were actually analyzed and used in the research
         used_source_urls = []
@@ -374,7 +342,8 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                         domain = url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source"
                         date = source_meta.get("date", "n.d.")
                         
-                        citation = f"[{i}] *{domain}*, \"{title}\", {date}, {url}"
+                        # Simpler citation format without the date
+                        citation = f"[{i}] *{domain}*, \"{title}\", {url}"
                         basic_references.append(citation)
                     
                     new_references = f"# References\n\n" + "\n".join(basic_references) + "\n"
