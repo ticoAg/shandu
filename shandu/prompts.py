@@ -2,7 +2,18 @@
 Centralized prompts for Shandu deep research system.
 All prompts used throughout the system are defined here for easier maintenance.
 """
-from typing import Dict
+from typing import Dict, Any
+
+# Utility function to safely format prompts with content that may contain curly braces
+def safe_format(template: str, **kwargs: Any) -> str:
+    """
+    Safely format a template string, escaping any curly braces in the values.
+    This prevents ValueError when content contains unexpected curly braces.
+    """
+    # Escape any curly braces in the values
+    safe_kwargs = {k: v.replace('{', '{{').replace('}', '}}') if isinstance(v, str) else v 
+                  for k, v in kwargs.items()}
+    return template.format(**safe_kwargs)
 
 # System prompts
 SYSTEM_PROMPTS: Dict[str, str] = {

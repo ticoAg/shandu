@@ -45,8 +45,7 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
     console.print("[bold blue]Generating comprehensive report with dynamic structure and source tracking...[/]")
 
     current_date = state["current_date"]
-    
-    # Create citation manager if not already in state, or get existing one
+
     if "citation_manager" not in state:
         citation_manager = CitationManager()
         state["citation_manager"] = citation_manager
@@ -54,17 +53,15 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
         state["citation_registry"] = citation_manager.citation_registry
     else:
         citation_manager = state["citation_manager"]
-        
-    # Get citation registry from manager
+
     citation_registry = citation_manager.citation_registry
     
     # Pre-register all selected sources and extract learnings
     if "selected_sources" in state and state["selected_sources"]:
         for url in state["selected_sources"]:
-            # Find source metadata
+
             source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
-            
-            # Create a SourceInfo object
+
             source_info = SourceInfo(
                 url=url,
                 title=source_meta.get("title", ""),
@@ -76,14 +73,12 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                 reliability_score=0.8,  # Default score, could be more dynamic
                 metadata=source_meta
             )
-            
-            # Add to citation manager
+
             citation_manager.add_source(source_info)
-            
-            # Extract learnings from content analyses
+
             for analysis in state["content_analysis"]:
                 if url in analysis.get("sources", []):
-                    # Extract paragraphs from analysis and register as learnings
+
                     citation_manager.extract_learning_from_text(
                         analysis.get("analysis", ""), 
                         url,
@@ -97,27 +92,22 @@ async def generate_initial_report_node(llm, include_objective, progress_callback
                 "date": source_meta.get("date", "n.d."),
                 "url": url
             })
-    
-    # Generate a professional title for the report
+
     report_title = await generate_title(llm, state['query'])
     console.print(f"[bold green]Generated title: {report_title}[/]")
-    
-    # Extract themes using our processor function
+
     extracted_themes = await extract_themes(llm, state['findings'])
-    
-    # Get citation stats
+
     citation_stats = citation_manager.get_learning_statistics()
     console.print(f"[bold green]Processed {citation_stats.get('total_learnings', 0)} learnings from {citation_stats.get('total_sources', 0)} sources[/]")
-    
-    # Format citations using the enhanced citation manager
+
     formatted_citations = await format_citations(
         llm, 
         state.get('selected_sources', []), 
         state["sources"],
         citation_registry  # For compatibility with format_citations function
     )
-    
-    # Generate the initial report using our processor functions
+
     initial_report = await generate_initial_report(
         llm,
         state['query'],
@@ -151,7 +141,7 @@ async def enhance_report_node(llm, progress_callback, state: AgentState) -> Agen
     Skip enhancement step to avoid duplicating content - this function now
     just passes through the initial report to maintain pipeline compatibility.
     """
-    # Check if shutdown was requested
+
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping report enhancement"
         log_chain_of_thought(state, "Shutdown requested, skipping report enhancement")
@@ -171,7 +161,7 @@ async def expand_key_sections_node(llm, progress_callback, state: AgentState) ->
     Skip expansion step to avoid duplicating content - this function now
     just passes through the initial report to maintain pipeline compatibility.
     """
-    # Check if shutdown was requested
+
     if is_shutdown_requested():
         state["status"] = "Shutdown requested, skipping section expansion"
         log_chain_of_thought(state, "Shutdown requested, skipping section expansion")
@@ -191,7 +181,6 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     state["status"] = "Finalizing report"
     console.print("[bold blue]Research complete. Finalizing report...[/]")
 
-    # Check if we have any report
     has_report = False
     if "final_report" in state and state["final_report"]:
         final_report = state["final_report"]
@@ -211,15 +200,12 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     # If we don't have a report, regenerate initial, enhanced, and expanded reports
     if not has_report:
         console.print("[bold yellow]No valid report found. Regenerating report from scratch...[/]")
-        
-        # Generate a professional title for the report
+
         report_title = await generate_title(llm, state['query'])
         console.print(f"[bold green]Generated title: {report_title}[/]")
-        
-        # Extract themes from findings
+
         extracted_themes = await extract_themes(llm, state['findings'])
-        
-        # Generate an initial report
+
         initial_report = await generate_initial_report(
             llm,
             state['query'],
@@ -243,8 +229,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
         
         # Use the initial report directly as the final report
         final_report = initial_report
-        
-        # Get the sources that were actually analyzed and used in the research
+
         used_source_urls = []
         for analysis in state["content_analysis"]:
             if "sources" in analysis and isinstance(analysis["sources"], list):
@@ -259,8 +244,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                     used_source_urls.append(url)
                     if len(used_source_urls) >= 15:
                         break
-        
-        # Extract information from sources for the report
+
         sources_info = []
         for url in used_source_urls[:20]:  # Limit to 20 sources
             source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
@@ -276,9 +260,13 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     final_report = re.sub(r'Generated search queries:.*?\n', '', final_report)
     final_report = re.sub(r'\*Generated on:.*?\*', '', final_report)
     
+    # Remove "Refined Research Query" section which sometimes appears at the beginning
+    final_report = re.sub(r'#\s*Refined Research Query:.*?(?=\n#|\Z)', '', final_report, flags=re.DOTALL)
+    final_report = re.sub(r'Refined Research Query:.*?(?=\n\n)', '', final_report, flags=re.DOTALL)
+    
     # Remove entire Research Framework sections (from start to first actual content section)
     if "Research Framework:" in final_report or "# Research Framework:" in final_report:
-        # Find the start of Research Framework section
+
         framework_matches = re.search(r'(?:^|\n)(?:#\s*)?Research Framework:.*?(?=\n#|\n\*\*|\Z)', final_report, re.DOTALL)
         if framework_matches:
             framework_section = framework_matches.group(0)
@@ -299,28 +287,41 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     final_report = re.sub(r'^Research Framework:.*?\n', '', final_report, flags=re.MULTILINE)
     final_report = re.sub(r'^Key Findings:.*?\n', '', final_report, flags=re.MULTILINE)
     final_report = re.sub(r'^Key aspects to focus on:.*?\n', '', final_report, flags=re.MULTILINE)
-    
-    # Ensure the report has the correctly formatted title at the beginning
+
     report_title = await generate_title(llm, state['query'])
     
-    # Remove the query from the beginning of the report if present
-    # This pattern removes lines that look like full query pasted as title
+    # Remove the query or any long text description from the beginning of the report if present
+    # This pattern removes lines that look like full query pasted as title or at the beginning
     if final_report.strip().startswith('# '):
         lines = final_report.split('\n')
-        first_line = lines[0]
         
-        # Check if first line is very long (likely a full query pasted as title)
-        if len(first_line) > 80 and first_line.startswith('# '):
+        # Remove any extremely long title lines (likely a full query pasted as title)
+        if len(lines) > 0 and len(lines[0]) > 80 and lines[0].startswith('# '):
             lines = lines[1:]  # Remove the first line
             final_report = '\n'.join(lines)
-            
-    # Check if the report already starts with a title (# Something)
+        
+        # Also look for any text block before the actual title that might be the original query
+        # or refined query description
+        start_idx = 0
+        title_idx = -1
+        
+        for i, line in enumerate(lines):
+            if line.startswith('# ') and i > 0 and len(line) < 100:
+                # Found what appears to be the actual title
+                title_idx = i
+                break
+        
+        # If we found a title after some text, remove everything before it
+        if title_idx > 0:
+            lines = lines[title_idx:]
+            final_report = '\n'.join(lines)
+
     title_match = re.match(r'^#\s+.*?\n', final_report)
     if title_match:
         # Replace existing title with our generated one
         final_report = re.sub(r'^#\s+.*?\n', f'# {report_title}\n', final_report, count=1)
     else:
-        # Add our title at the beginning
+
         final_report = f'# {report_title}\n\n{final_report}'
         
     # Also check for second line being the full query, which happens sometimes
@@ -328,32 +329,29 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     if len(lines) > 2 and len(lines[1]) > 80 and "query" not in lines[1].lower():
         lines.pop(1)  # Remove the second line if it looks like a query
         final_report = '\n'.join(lines)
-    
-    # Check for references section and ensure it's properly formatted
+
     if "References" in final_report:
-        # Extract references section
+
         references_match = re.search(r'#+\s*References.*?(?=#+\s+|\Z)', final_report, re.DOTALL)
         if references_match:
             references_section = references_match.group(0)
             
             # Always replace the references section with our properly formatted web citations
             console.print("[yellow]Ensuring references are properly formatted as web citations...[/]")
-            
-            # Check and validate citations against the registry
+
             citation_registry = state.get("citation_registry")
             citation_manager = state.get("citation_manager")
             formatted_citations = ""
             
             if citation_manager and citation_registry:
-                # Get information about citation coverage
+
                 citation_stats = citation_manager.get_learning_statistics()
                 console.print(f"[bold green]Report references {len(citation_registry.citations)} sources with {citation_stats.get('total_learnings', 0)} tracked learnings[/]")
-                
-                # Validate the in-text citations against the registry
+
                 validation_result = citation_registry.validate_citations(final_report)
                 
                 if not validation_result["valid"]:
-                    # Handle different types of invalid citations
+
                     out_of_range_count = len(validation_result.get("out_of_range_citations", set()))
                     other_invalid_count = len(validation_result["invalid_citations"]) - out_of_range_count
                     max_valid_id = validation_result.get("max_valid_id", 0)
@@ -372,13 +370,12 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                         else:
                             # Replace other invalid patterns like [invalid_cid] with [?]
                             final_report = re.sub(f'\\[{invalid_cid}\\]', '[?]', final_report)
-                
-                # Create updated citations using only the actually used citations
+
                 used_citations = validation_result["used_citations"]
                 
                 # If we have a citation manager, use its enhanced formatting
                 if citation_manager and used_citations:
-                    # Generate bibliography using citation manager's formatter
+
                     processed_text, bibliography_entries = citation_manager.get_citations_for_report(final_report)
                     
                     # Use the citation manager's bibliography formatter with APA style
@@ -387,7 +384,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                         console.print(f"[bold green]Generated enhanced bibliography with {len(bibliography_entries)} entries[/]")
                 # Fall back to regular citation formatting
                 elif used_citations:
-                    # Generate formatted citations from used citations
+
                     formatted_citations = await format_citations(
                         llm, 
                         state.get('selected_sources', []), 
@@ -403,7 +400,7 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
                 new_references = f"# References\n\n{state['formatted_citations']}\n"
                 final_report = final_report.replace(references_section, new_references)
             else:
-                # Generate web-style references if formatted_citations isn't available
+
                 basic_references = []
                 for i, url in enumerate(state.get("selected_sources", []), 1):
                     source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
@@ -425,7 +422,6 @@ async def report_node(llm, progress_callback, state: AgentState) -> AgentState:
     state["findings"] = final_report
     state["status"] = "Complete"
 
-    # Generate detailed citation stats if available
     if "citation_manager" in state:
         citation_stats = state["citation_manager"].get_learning_statistics()
         log_chain_of_thought(

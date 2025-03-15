@@ -8,7 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 from ..processors.content_processor import AgentState
 from ..utils.agent_utils import log_chain_of_thought, _call_progress_callback
-from ...prompts import SYSTEM_PROMPTS, USER_PROMPTS
+from ...prompts import SYSTEM_PROMPTS, USER_PROMPTS, safe_format
 
 console = Console()
 
@@ -37,10 +37,14 @@ async def reflect_node(llm, progress_callback, state: AgentState) -> AgentState:
     console.print("[bold yellow]Reflecting on current findings...[/]")
     
     try:
-        direct_prompt = f"""Analyze the following research findings and provide a detailed reflection. Today's date: {state['current_date']}
+        # Use safe_format instead of manual escaping
+        current_date = state['current_date']
+        findings = state['findings'][:3000]
+        
+        direct_prompt = safe_format("""Analyze the following research findings and provide a detailed reflection. Today's date: {current_date}
 
 Research Findings:
-{state['findings'][:3000]}
+{findings}
 
 Your reflection must include these sections clearly labeled:
 
@@ -60,28 +64,23 @@ Your reflection must include these sections clearly labeled:
 - Provide a comprehensive assessment of the research progress
 - Evaluate the overall quality and reliability of the findings
 
-Format your response with clear section headings and bullet points for clarity.
-"""
+Format your response with clear section headings and bullet points for clarity.""", current_date=current_date, findings=findings)
         # Send the prompt directly to the model
         response = await llm.ainvoke(direct_prompt)
-        
-        # Process the response directly
+
         reflection_text = response.content
-        
-        # Extract key sections manually
+
         import re
         key_insights = []
         knowledge_gaps = []
         next_steps = []
         reflection_summary = ""
-        
-        # Extract insights
+
         insights_section = re.search(r'(?:key insights|insights|key findings)(?:\s*:|\s*\n)([^#]*?)(?:#|$)', reflection_text.lower(), re.IGNORECASE | re.DOTALL)
         if insights_section:
             insights_text = insights_section.group(1).strip()
             key_insights = [line.strip().strip('-*').strip() for line in insights_text.split('\n') if line.strip() and not line.strip().startswith('#')]
-        
-        # Extract gaps
+
         gaps_section = re.search(r'(?:knowledge gaps|gaps|questions|unanswered questions)(?:\s*:|\s*\n)([^#]*?)(?:#|$)', reflection_text.lower(), re.IGNORECASE | re.DOTALL)
         if gaps_section:
             gaps_text = gaps_section.group(1).strip()
@@ -104,8 +103,7 @@ Format your response with clear section headings and bullet points for clarity.
             next_steps = ["Continue investigating primary aspects", "Search for more specific examples"]
         if not reflection_summary:
             reflection_summary = "The research is making progress and has uncovered valuable information, but further investigation is needed in key areas."
-        
-        # Format the reflection into a well-structured text
+
         formatted_reflection = "## Key Insights\n\n"
         for insight in key_insights:
             formatted_reflection += f"- {insight}\n"
@@ -125,18 +123,26 @@ Format your response with clear section headings and bullet points for clarity.
         state["findings"] += f"\n\n## Reflection on Current Findings\n\n{formatted_reflection}\n\n"
         
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in structured reflection", e, 
+                 context=f"Function: reflect_node")
         console.print(f"[dim red]Error in structured reflection: {str(e)}. Using simpler approach.[/dim red]")
         try:
-            response = await llm.ainvoke(f"""Reflect on these research findings:
+            # Use safe_format in the fallback case too
+            fallback_findings = state['findings'][:2000]
+            
+            fallback_prompt = safe_format("""Reflect on these research findings:
 
-{state['findings'][:2000]}
+{findings}
 
 Include: 
 1. Key insights
 2. Knowledge gaps
 3. Next steps
 4. Overall assessment
-""")
+""", findings=fallback_findings)
+            
+            response = await llm.ainvoke(fallback_prompt)
             
             reflection_content = response.content
             

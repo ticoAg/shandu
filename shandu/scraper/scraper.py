@@ -31,7 +31,6 @@ CACHE_ENABLED = True
 CACHE_DIR = os.path.expanduser("~/.shandu/cache/scraper")
 CACHE_TTL = 86400  # 24 hours in seconds
 
-# Create cache directory if it doesn't exist
 if CACHE_ENABLED and not os.path.exists(CACHE_DIR):
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -67,27 +66,24 @@ class DomainReliability:
             }
             
         metrics = self.domain_metrics[domain]
-        
-        # Update success/failure counts
+
         if success:
             metrics["success_count"] += 1
         else:
             metrics["fail_count"] += 1
-            
-        # Update average response time
+
         if response_time > 0:
             total_requests = metrics["success_count"] + metrics["fail_count"]
             metrics["avg_response_time"] = (
                 (metrics["avg_response_time"] * (total_requests - 1) + response_time) / total_requests
             )
-            
-        # Update status code tracking
+
         if status_code:
             metrics["status_codes"][str(status_code)] = metrics["status_codes"].get(str(status_code), 0) + 1
             
         # Adjust timeout based on response times
         if metrics["success_count"] >= 3:
-            # Set timeout to 1.5x the average response time, with min and max bounds
+
             metrics["timeout"] = min(30.0, max(5.0, metrics["avg_response_time"] * 1.5))
 
 # Global domain reliability tracker
@@ -137,7 +133,8 @@ class WebScraper:
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
         self.in_progress_urls: Set[str] = set()  # Track URLs being scraped to prevent duplicates
-        self.semaphore = asyncio.Semaphore(self.max_concurrent)  # Control concurrency
+        self._semaphores = {}  # Dictionary to store semaphores for each event loop
+        self._semaphore_lock = asyncio.Lock()  # Lock for thread-safe access to semaphores
         
         # Try to use fake_useragent if available
         try:
@@ -160,7 +157,7 @@ class WebScraper:
             return None
             
         try:
-            # Check if cache is expired
+
             if time.time() - os.path.getmtime(cache_path) > self.cache_ttl:
                 return None
                 
@@ -168,8 +165,7 @@ class WebScraper:
             import json
             with open(cache_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                
-            # Convert to ScrapedContent object
+
             return ScrapedContent(
                 url=data["url"],
                 title=data["title"],
@@ -193,7 +189,7 @@ class WebScraper:
         cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
         
         try:
-            # Create a serializable representation
+
             import json
             data = {
                 "url": content.url,
@@ -227,8 +223,7 @@ class WebScraper:
         """
         start_time = time.time()
         logger.info(f"Scraping URL: {url}")
-        
-        # Check if URL is valid
+
         if not url.startswith(('http://', 'https://')):
             return ScrapedContent(
                 url=url,
@@ -240,8 +235,7 @@ class WebScraper:
                 error="Invalid URL format",
                 scrape_time=start_time
             )
-        
-        # Check if already being processed (to avoid race conditions)
+
         if url in self.in_progress_urls:
             return ScrapedContent(
                 url=url,
@@ -258,15 +252,14 @@ class WebScraper:
         self.in_progress_urls.add(url)
         
         try:
-            # Check cache first if not forcing refresh
+
             if not force_refresh:
                 cached_content = await self._check_cache(url)
                 if cached_content:
                     logger.info(f"Using cached content for {url}")
                     self.in_progress_urls.remove(url)
                     return cached_content
-            
-            # Get adaptive timeout for this domain
+
             adaptive_timeout = domain_reliability.get_timeout(url)
             
             # Configure WebBaseLoader with appropriate settings
@@ -281,9 +274,11 @@ class WebScraper:
                     "http": self.proxy,
                     "https": self.proxy
                 }
+
+            semaphore = await self._get_semaphore()
             
             # Acquire semaphore to limit concurrency
-            async with self.semaphore:
+            async with semaphore:
                 # If dynamic rendering is requested, use Playwright
                 if dynamic:
                     try:
@@ -292,8 +287,7 @@ class WebScraper:
                         async with async_playwright() as p:
                             browser = await p.chromium.launch(headless=True)
                             page = await browser.new_page(user_agent=self.user_agent)
-                            
-                            # Set timeout for navigation
+
                             page.set_default_timeout(adaptive_timeout * 1000)
                             
                             # Navigate to the URL with timeout handling
@@ -302,29 +296,23 @@ class WebScraper:
                                     page.goto(url, wait_until="networkidle"),
                                     timeout=adaptive_timeout
                                 )
-                                
-                                # Get the page content
+
                                 html_content = await page.content()
-                                
-                                # Get the page title
+
                                 title = await page.title()
                                 
                                 # Close the browser
                                 await browser.close()
-                                
-                                # Parse the HTML with BeautifulSoup
+
                                 soup = BeautifulSoup(html_content, "lxml")
-                                
-                                # Extract metadata
+
                                 metadata = self._extract_metadata(soup, url)
-                                
-                                # Extract main content
+
                                 main_content = self._extract_main_content(soup)
                                 
                                 end_time = time.time()
                                 scrape_time = end_time - start_time
-                                
-                                # Update domain reliability metrics
+
                                 domain_reliability.update_metrics(
                                     url=url, 
                                     success=True, 
@@ -353,7 +341,7 @@ class WebScraper:
                             except asyncio.TimeoutError:
                                 await browser.close()
                                 logger.warning(f"Playwright timeout for {url}")
-                                # Update domain reliability metrics for timeout
+
                                 domain_reliability.update_metrics(
                                     url=url, 
                                     success=False, 
@@ -365,7 +353,7 @@ class WebScraper:
                         logger.warning("Playwright not installed. Falling back to WebBaseLoader.")
                     except Exception as e:
                         logger.error(f"Error during dynamic rendering: {e}. Falling back to WebBaseLoader.")
-                        # Update domain reliability metrics
+
                         domain_reliability.update_metrics(
                             url=url, 
                             success=False, 
@@ -390,8 +378,7 @@ class WebScraper:
                     if not documents:
                         end_time = time.time()
                         scrape_time = end_time - start_time
-                        
-                        # Update domain reliability metrics
+
                         domain_reliability.update_metrics(
                             url=url, 
                             success=False, 
@@ -409,17 +396,13 @@ class WebScraper:
                             error="No content found",
                             scrape_time=scrape_time
                         )
-                    
-                    # Get the first document (there should only be one for a single URL)
+
                     document = documents[0]
-                    
-                    # Extract metadata from the document
+
                     metadata = document.metadata
-                    
-                    # Get the page content
+
                     text_content = document.page_content
-                    
-                    # Process content more efficiently
+
                     # Only split if very long to reduce processing overhead
                     if len(text_content) > 20000:
                         text_splitter = RecursiveCharacterTextSplitter(
@@ -429,8 +412,7 @@ class WebScraper:
                         )
                         chunks = text_splitter.split_text(text_content)
                         text_content = "\n\n".join(chunks[:5])  # Use first 5 chunks for more comprehensive coverage
-                    
-                    # Clean up excessive whitespace
+
                     text_content = re.sub(r'\n{3,}', '\n\n', text_content)
                     text_content = re.sub(r'\s{2,}', ' ', text_content)
                     
@@ -440,26 +422,22 @@ class WebScraper:
                     text_content = re.sub(r'\[\/?[^\]]*\]?', ' ', text_content)  # Incomplete/malformed tags
                     text_content = re.sub(r'\[[^\]]*\]', ' ', text_content)  # Any bracketed content
 
-                    # Get HTML content if available
                     html_content = ""
                     if hasattr(loader, "_html_content") and loader._html_content:
                         html_content = loader._html_content
-                    
-                    # Get title from metadata or extract from HTML
+
                     title = metadata.get("title", "")
                     if not title and html_content:
                         soup = BeautifulSoup(html_content, "lxml")
                         title_tag = soup.find("title")
                         if title_tag:
                             title = title_tag.text.strip()
-                    
-                    # Get content type
+
                     content_type = metadata.get("content-type", "text/html")
                     
                     end_time = time.time()
                     scrape_time = end_time - start_time
-                    
-                    # Update domain reliability metrics
+
                     domain_reliability.update_metrics(
                         url=url, 
                         success=True, 
@@ -494,8 +472,7 @@ class WebScraper:
             scrape_time = end_time - start_time
             
             logger.error(f"Error scraping URL {url}: {str(e)}")
-            
-            # Update domain reliability metrics
+
             domain_reliability.update_metrics(
                 url=url, 
                 success=False, 
@@ -522,13 +499,11 @@ class WebScraper:
             "url": url,
             "domain": urlparse(url).netloc
         }
-        
-        # Extract title
+
         title_tag = soup.find("title")
         if title_tag:
             metadata["title"] = title_tag.text.strip()
-        
-        # Extract meta tags
+
         for meta in soup.find_all("meta"):
             name = meta.get("name", meta.get("property", ""))
             content = meta.get("content", "")
@@ -585,6 +560,41 @@ class WebScraper:
         
         return content.strip()
     
+    async def _get_semaphore(self) -> asyncio.Semaphore:
+        """
+        Get or create a semaphore for the current event loop.
+        
+        This ensures that each thread has its own semaphore bound to the correct event loop.
+        """
+        try:
+
+            loop = asyncio.get_event_loop()
+            loop_id = id(loop)
+            
+            # If we already have a semaphore for this loop, return it
+            if loop_id in self._semaphores:
+                return self._semaphores[loop_id]
+            
+            # Otherwise, create a new one
+            async with self._semaphore_lock:
+                # Double-check if another task has created it while we were waiting
+                if loop_id in self._semaphores:
+                    return self._semaphores[loop_id]
+
+                semaphore = asyncio.Semaphore(self.max_concurrent)
+                self._semaphores[loop_id] = semaphore
+                return semaphore
+                
+        except RuntimeError:
+            # If we can't get the event loop, create a new one and a semaphore for it
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            semaphore = asyncio.Semaphore(self.max_concurrent)
+            
+            loop_id = id(loop)
+            self._semaphores[loop_id] = semaphore
+            return semaphore
+            
     async def scrape_urls(self, urls: List[str], dynamic: bool = False, force_refresh: bool = False) -> List[ScrapedContent]:
         """
         Scrape multiple URLs concurrently with improved parallelism and error handling.
@@ -646,7 +656,7 @@ class WebScraper:
             
         except asyncio.TimeoutError:
             logger.error("Overall timeout exceeded during batch scraping")
-            # Return partial results for those that completed
+
             completed_results = [task.result() if task.done() and not task.exception() else None for task in tasks]
             
             # Replace None values with error objects

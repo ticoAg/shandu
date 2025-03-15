@@ -11,7 +11,6 @@ import hashlib
 from urllib.parse import urlparse
 from .citation_registry import CitationRegistry
 
-
 @dataclass
 class SourceInfo:
     """Detailed information about a source."""
@@ -32,7 +31,6 @@ class SourceInfo:
             parsed_url = urlparse(self.url)
             self.domain = parsed_url.netloc
 
-
 @dataclass
 class Learning:
     """A specific piece of information learned from sources."""
@@ -47,9 +45,8 @@ class Learning:
     def __post_init__(self):
         """Initialize hash_id if not provided."""
         if not self.hash_id:
-            # Create a hash based on content for deduplication
-            self.hash_id = hashlib.md5(self.content.encode('utf-8')).hexdigest()
 
+            self.hash_id = hashlib.md5(self.content.encode('utf-8')).hexdigest()
 
 class CitationManager:
     """
@@ -76,7 +73,7 @@ class CitationManager:
         url = source_info.url
         if url not in self.sources:
             self.source_to_learnings[url] = []
-            # Set access time if not already set
+
             if not source_info.access_time:
                 source_info.access_time = time.time()
         
@@ -93,12 +90,12 @@ class CitationManager:
         Returns:
             str: The hash_id of the learning
         """
-        # Check for duplicates by looking at similar content
+
         existing_hash = self._find_similar_learning(learning.content)
         if existing_hash:
-            # Update existing learning instead of creating a new one
+
             existing = self.learnings[existing_hash]
-            # Add any new sources not already associated
+
             for source_url in learning.sources:
                 if source_url not in existing.sources:
                     existing.sources.append(source_url)
@@ -106,8 +103,7 @@ class CitationManager:
                     if source_url in self.source_to_learnings:
                         if existing_hash not in self.source_to_learnings[source_url]:
                             self.source_to_learnings[source_url].append(existing_hash)
-            
-            # Update other fields if provided
+
             if learning.confidence != 1.0:
                 # Use weighted average for confidence updates
                 existing.confidence = (existing.confidence + learning.confidence) / 2
@@ -121,25 +117,21 @@ class CitationManager:
                     existing.context += f" {learning.context}"
                 else:
                     existing.context = learning.context
-                    
-            # Add any new source quotes
+
             for quote in learning.source_quotes:
                 if quote not in existing.source_quotes:
                     existing.source_quotes.append(quote)
                     
             return existing_hash
-        
-        # Add new learning
+
         hash_id = learning.hash_id
         self.learnings[hash_id] = learning
-        
-        # Update the reverse mapping
+
         for source_url in learning.sources:
             if source_url not in self.source_to_learnings:
                 self.source_to_learnings[source_url] = []
             self.source_to_learnings[source_url].append(hash_id)
-            
-            # Ensure the source exists in our sources dictionary
+
             if source_url not in self.sources:
                 self.add_source(SourceInfo(url=source_url))
                 
@@ -283,15 +275,14 @@ class CitationManager:
         Returns:
             Tuple[str, List[Dict]]: The processed text with proper citations and the bibliography entries
         """
-        # Extract all citation-like patterns from the report
+
         citation_pattern = re.compile(r'\[(\d+)\]')
         used_citation_ids = set(int(cid) for cid in citation_pattern.findall(report_text) if cid.isdigit())
-        
-        # Get information for each citation
+
         bibliography = []
         
         for cid in sorted(used_citation_ids):
-            # Convert to citation registry format
+
             reg_id = self.citation_registry.register_citation(f"citation-{cid}")
             
             # Try to find the corresponding source
@@ -321,8 +312,7 @@ class CitationManager:
                     "source_type": "unknown",
                     "accessed": "Unknown Date"
                 })
-        
-        # Process the text to ensure citations are properly formatted
+
         processed_text = report_text
         
         return processed_text, bibliography
@@ -418,8 +408,7 @@ class CitationManager:
                     domain_counts[domain] = 0
                 domain_reliability[domain] += source.reliability_score
                 domain_counts[domain] += 1
-        
-        # Calculate averages
+
         avg_reliability = {}
         for domain, total in domain_reliability.items():
             count = domain_counts[domain]
@@ -472,19 +461,15 @@ class CitationManager:
             self.learnings.clear()
             self.source_to_learnings.clear()
             self.learning_categories.clear()
-            
-            # Import sources
+
             for url, source_dict in data.get("sources", {}).items():
                 self.sources[url] = self._dict_to_source(source_dict)
-                
-            # Import learnings
+
             for hash_id, learning_dict in data.get("learnings", {}).items():
                 self.learnings[hash_id] = self._dict_to_learning(learning_dict)
-                
-            # Import mappings
+
             self.source_to_learnings = data.get("source_to_learnings", {})
-            
-            # Import categories
+
             self.learning_categories = set(data.get("learning_categories", []))
             
             return True

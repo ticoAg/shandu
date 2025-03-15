@@ -27,8 +27,7 @@ def build_graph(
         Compiled graph ready for execution
     """
     workflow = StateGraph(AgentState)
-    
-    # Add all nodes
+
     workflow.add_node("initialize", initialize_node)
     workflow.add_node("reflect", reflect_node)
     workflow.add_node("generate_queries", generate_queries_node)
@@ -39,8 +38,7 @@ def build_graph(
     workflow.add_node("enhance_report", enhance_report_node)
     workflow.add_node("expand_key_sections", expand_key_sections_node)
     workflow.add_node("report", report_node)
-    
-    # Add edges for research phase
+
     workflow.add_edge("initialize", "generate_queries")
     workflow.add_edge("reflect", "generate_queries")
     workflow.add_edge("generate_queries", "search")
@@ -48,8 +46,7 @@ def build_graph(
         "continue": "reflect", 
         "end": "smart_source_selection"
     })
-    
-    # Add edges for report generation phase - ensure all steps are used
+
     workflow.add_edge("smart_source_selection", "format_citations")
     workflow.add_edge("format_citations", "generate_initial_report")
     workflow.add_edge("generate_initial_report", "enhance_report")

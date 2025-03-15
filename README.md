@@ -140,9 +140,9 @@ shandu research "Your research query" \
 
 You can find example reports in the examples directory:
 
-1. **High Energy Storage Report** - A comprehensive analysis of technological innovations in renewable energy storage (2020-2025)
+1. **The Intersection of Quantum Computing, Synthetic Biology, and Climate Modeling**
    ```bash
-   shandu research "What are the technological advancements in renewable energy storage (e.g., batteries, hydrogen) between 2020 and 2025, and how have they impacted energy grid reliability?" --depth 2 --breadth 2 -o "examples/o3-mini-high_energy-storage-report.md"
+   shandu research "The Intersection of Quantum Computing, Synthetic Biology, and Climate Modeling" --depth 3 --breadth 3 --output examples/o3-mini-high.md
    ```
 
 ### AI Search Command with Scraping

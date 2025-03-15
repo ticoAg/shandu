@@ -3,7 +3,6 @@ Citation registry to track and manage citations throughout the report generation
 """
 from typing import Dict, Any, List, Optional, Set, Union
 
-
 class CitationRegistry:
     """
     Registry that tracks all citations used in a report, ensuring that in-text citations
@@ -27,10 +26,10 @@ class CitationRegistry:
         Returns:
             int: The citation ID to use in the report
         """
-        # Check if this URL has already been registered
+
         if source_url in self.url_to_id:
             citation_id = self.url_to_id[source_url]
-            # Add additional context if provided
+
             if context and context not in self.citation_contexts.get(citation_id, []):
                 if citation_id not in self.citation_contexts:
                     self.citation_contexts[citation_id] = []
@@ -100,12 +99,10 @@ class CitationRegistry:
             - out_of_range_citations: Set of citation IDs that exceed the maximum registered ID
         """
         import re
-        
-        # Extract all citation numbers from the text
+
         citation_pattern = re.compile(r'\[(\d+)\]')
         used_citations = set(int(cid) for cid in citation_pattern.findall(text) if cid.isdigit())
-        
-        # Check if all used citations exist in the registry
+
         registry_ids = set(self.citations.keys())
         invalid_citations = used_citations - registry_ids
         missing_citations = registry_ids - used_citations
@@ -113,8 +110,7 @@ class CitationRegistry:
         # Identify citations that exceed the maximum registered ID
         max_id = max(registry_ids) if registry_ids else 0
         out_of_range_citations = {cid for cid in used_citations if cid > max_id}
-        
-        # Add out-of-range citations to invalid citations
+
         invalid_citations = invalid_citations.union(out_of_range_citations)
         
         return {

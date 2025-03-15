@@ -26,7 +26,6 @@ _shutdown_lock = threading.Lock()
 _shutdown_counter = 0
 _MAX_SHUTDOWN_ATTEMPTS = 3
 
-# Set up signal handlers for graceful shutdown
 def setup_signal_handlers():
     """Set up signal handlers for graceful shutdown."""
     def signal_handler(sig, frame):
@@ -43,8 +42,7 @@ def setup_signal_handlers():
                 console.print("\n[bold red]Forced exit requested. Exiting immediately.[/]")
                 # Force exit after multiple attempts
                 os._exit(1)
-    
-    # Set up handlers for common termination signals
+
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
@@ -64,17 +62,16 @@ def get_shutdown_level() -> int:
 def get_user_input(prompt: str) -> str:
     """Get formatted user input with shutdown handling."""
     console.print(prompt, style="yellow")
-    
-    # Check if shutdown was requested before getting input
+
     if is_shutdown_requested():
         console.print("[yellow]Shutdown requested, skipping user input...[/]")
         return "any"  # Return a generic answer to allow the process to continue to shutdown
     
     try:
-        # Set a timeout for input to allow checking for shutdown
+
         return input("> ").strip()
     except (KeyboardInterrupt, EOFError):
-        # Handle keyboard interrupt during input
+
         with _shutdown_lock:
             global _shutdown_requested
             _shutdown_requested = True
@@ -99,14 +96,12 @@ def should_continue(state: AgentState) -> str:
         
         # Otherwise, allow the current depth to complete
         return "continue"
-    
-    # Add a check for maximum iterations to prevent infinite loops
+
     if "iteration_count" not in state:
         state["iteration_count"] = 1
     else:
         state["iteration_count"] += 1
-    
-    # Add a hard limit on iterations to prevent infinite recursion
+
     # This is separate from depth/breadth and ensures we won't get stuck
     if state["iteration_count"] >= 25:
         console.print("[yellow]Maximum iterations reached. Ending research to prevent infinite loop.[/]")
@@ -158,8 +153,7 @@ def display_research_progress(state: AgentState) -> Tree:
     phase = "Research" if "depth" in status.lower() or any(word in status.lower() for word in ["searching", "querying", "reflecting", "analyzing"]) else "Report Generation"
     
     tree = Tree(f"[bold blue]{phase} Progress: {status}")
-    
-    # Add stats node
+
     stats_node = tree.add(f"[cyan]Stats")
     stats_node.add(f"[blue]Time Elapsed:[/] {minutes}m {seconds}s")
     
@@ -278,8 +272,7 @@ async def clarify_query(query: str, llm, date: Optional[str] = None, system_prom
     
     current_date = date or datetime.now().strftime("%Y-%m-%d")
     console.print(f"[bold blue]Initial Query:[/] {query}")
-    
-    # Get the system and user prompts from the centralized prompts
+
     if not system_prompt:
         # Use direct string with current_date instead of format
         clarify_prompt = SYSTEM_PROMPTS.get("clarify_query", "")
@@ -313,8 +306,7 @@ These questions must seek to clarify the exact focal points, the depth of detail
             IMPORTANT: Provide ONLY the questions themselves, without any introduction or preamble.
             Each question should be clear, direct, and standalone.
             """)
-            
-            # Extract questions from the response
+
             questions = [q.strip() for q in response.content.split("\n") if q.strip() and "?" in q]
             
             # Limit to top 3-5 questions
@@ -323,12 +315,14 @@ These questions must seek to clarify the exact focal points, the depth of detail
             console.print(f"[dim red]Error in question generation: {str(e)}. Using default questions.[/dim red]")
             questions = []
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in clarify_query", e, 
+                 context=f"Query: {query}, Function: clarify_query")
         console.print(f"[dim red]Error in structured question generation: {str(e)}. Using simpler approach.[/dim red]")
         try:
             # Direct approach without structured output
             response = await llm.ainvoke(f"Generate 3 direct clarifying questions for the research query: {query}")
-            
-            # Extract questions from the response
+
             questions = [q.strip() for q in response.content.split("\n") if q.strip() and "?" in q]
         except Exception as e2:
             console.print(f"[dim red]Error in fallback question generation: {str(e2)}. Using default questions.[/dim red]")
@@ -344,11 +338,10 @@ These questions must seek to clarify the exact focal points, the depth of detail
     
     # Limit to 3 questions
     questions = questions[:3]
-    
-    # Get answers from user
+
     answers = []
     for q in questions:
-        # Check if shutdown was requested before asking each question
+
         if is_shutdown_requested():
             console.print("[yellow]Shutdown requested, using generic answers...[/]")
             answers.append("any")  # Use a generic answer
@@ -358,8 +351,7 @@ These questions must seek to clarify the exact focal points, the depth of detail
         answers.append(answer)
     
     qa_text = "\n".join([f"Q: {q}\nA: {a}" for q, a in zip(questions, answers)])
-    
-    # Get refine_query system prompt directly without using format
+
     refine_system_prompt = f"""You must refine the research query into a strict, focused direction based on user-provided answers. Today's date: {current_date}.
 
 REQUIREMENTS:
@@ -384,12 +376,14 @@ REQUIREMENTS:
         """)
         
         refined_context_raw = response.content
-        
-        # Clean up any markdown formatting and meta-commentary
+
         refined_context = refined_context_raw.replace("**", "").replace("# ", "").replace("## ", "")
         refined_context = re.sub(r'^(?:Based on our discussion,|Following our conversation,|As per our discussion,).*?(?:refined topic:|research the following:|exploring|analyze):\s*', '', refined_context, flags=re.IGNORECASE)
         refined_context = re.sub(r'Based on our discussion.*?(?=\.)\.', '', refined_context, flags=re.IGNORECASE)
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in clarify_query", e, 
+                 context=f"Query: {query}, Function: clarify_query")
         console.print(f"[dim red]Error in structured query refinement: {str(e)}. Using simpler approach.[/dim red]")
         #current_file = os.path.basename(__file__)
         #with open('example.txt', 'a') as file:
@@ -409,8 +403,7 @@ REQUIREMENTS:
             """)
             
             refined_context_raw = response.content
-            
-            # Clean up any markdown formatting and meta-commentary
+
             refined_context = refined_context_raw.replace("**", "").replace("# ", "").replace("## ", "")
             refined_context = re.sub(r'^(?:Based on our discussion,|Following our conversation,|As per our discussion,).*?(?:refined topic:|research the following:|exploring|analyze):\s*', '', refined_context, flags=re.IGNORECASE)
             refined_context = re.sub(r'Based on our discussion.*?(?=\.)\.', '', refined_context, flags=re.IGNORECASE)

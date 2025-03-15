@@ -26,16 +26,13 @@ class ResearchResult:
         elapsed_time = stats.get("elapsed_time_formatted", "Unknown")
         sources_count = stats.get("sources_count", len(self.sources))
         subqueries_count = stats.get("subqueries_count", len(self.subqueries))
-        
-        # Get citation statistics if available
+
         citation_stats = self.citation_stats or {}
         total_sources = citation_stats.get("total_sources", sources_count)
         total_learnings = citation_stats.get("total_learnings", 0)
-    
-        # Process the summary to remove formatting issues
+
         summary = self.summary
-        
-        # Clean up any formatting artifacts
+
         lines = summary.split("\n")
         
         # Remove specific artifacts that can appear in the output
@@ -62,8 +59,7 @@ class ResearchResult:
             # Split by sections
             parts = summary.split("## ")
             filtered_parts = []
-            
-            # Process each section
+
             for part in parts:
                 # Keep executive summary or empty parts
                 if part.startswith("Executive Summary") or not part.strip():
@@ -83,27 +79,23 @@ class ResearchResult:
                     summary = "## ".join(filtered_parts)
                 else:
                     summary = filtered_parts[0] + "## " + "## ".join(filtered_parts[1:])
-        
-        # Generate the report without the timestamp
+
         md = [
             f"# {self.query}\n",
             f"{summary}\n"
         ]
-        
-        # Add research process stats
+
         md.append("## Research Process\n")
         md.append(f"- **Depth**: {self.depth}")
         md.append(f"- **Breadth**: {stats.get('breadth', 'Not specified')}")
         md.append(f"- **Time Taken**: {elapsed_time}")
         md.append(f"- **Subqueries Explored**: {subqueries_count}")
         md.append(f"- **Sources Analyzed**: {sources_count}")
-        
-        # Add citation statistics if available
+
         if total_learnings > 0:
             md.append(f"- **Total Learnings Extracted**: {total_learnings}")
             md.append(f"- **Source Coverage**: {total_sources} sources with {total_learnings} tracked information points")
-            
-            # Add reliability information if available
+
             source_reliability = citation_stats.get("source_reliability", {})
             if source_reliability:
                 md.append(f"- **Source Quality**: {len(source_reliability)} domains assessed for reliability\n")
@@ -111,8 +103,7 @@ class ResearchResult:
                 md.append("")
         else:
             md.append("")
-        
-        # Add chain of thought if requested
+
         if include_chain_of_thought and self.chain_of_thought:
             md.append("## Research Process: Chain of Thought\n")
             significant_thoughts = []
@@ -154,8 +145,7 @@ class ResearchResult:
             "research_stats": self.research_stats,
             "timestamp": self.timestamp.isoformat()
         }
-        
-        # Add citation stats if available
+
         if self.citation_stats:
             result["citation_stats"] = self.citation_stats
             

@@ -65,18 +65,15 @@ Format your response with clear section headings and bullet points for clarity. 
 """
         # Send the direct prompt to the model
         response = await llm.ainvoke(direct_prompt)
-        
-        # Process the response directly
+
         research_text = response.content
-        
-        # Extract key sections for structured formatting
+
         import re
         objectives = []
         key_areas = []
         methodology = ""
         expected_outcomes = []
-        
-        # Extract sections using regex
+
         objectives_section = re.search(r'(?:objectives|goals|aims)(?:\s*:|\s*\n)([^#]*?)(?:#|$)', research_text.lower(), re.IGNORECASE | re.DOTALL)
         if objectives_section:
             objectives_text = objectives_section.group(1).strip()
@@ -95,8 +92,7 @@ Format your response with clear section headings and bullet points for clarity. 
         if outcomes_section:
             outcomes_text = outcomes_section.group(1).strip()
             expected_outcomes = [line.strip().strip('-*').strip() for line in outcomes_text.split('\n') if line.strip() and not line.strip().startswith('#')]
-        
-        # Ensure we have at least some content for each section
+
         if not objectives:
             objectives = ["Understand the key aspects of " + state['query']]
         if not key_areas:
@@ -105,8 +101,7 @@ Format your response with clear section headings and bullet points for clarity. 
             methodology = "Systematic review of available literature and analysis of current applications and examples."
         if not expected_outcomes:
             expected_outcomes = ["Comprehensive understanding of " + state['query'], "Identification of key challenges and opportunities"]
-        
-        # Format the research plan into a well-structured text
+
         formatted_plan = "# Research Plan\n\n"
         
         formatted_plan += "## Objectives\n\n"
@@ -128,6 +123,9 @@ Format your response with clear section headings and bullet points for clarity. 
         state["findings"] = f"{formatted_plan}\n\n# Initial Findings\n\n"
         
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in structured plan generation", e, 
+                 context=f"Query: {state['query']}, Function: initialize_node")
         console.print(f"[dim red]Error in structured plan generation: {str(e)}. Using simpler approach.[/dim red]")
         try:
             # Even simpler fallback approach

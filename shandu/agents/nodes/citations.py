@@ -28,14 +28,12 @@ async def format_citations_node(llm, progress_callback, state: AgentState) -> Ag
     """
     state["status"] = "Processing and formatting citations"
     console.print("[bold blue]Processing source citations with enhanced attribution...[/]")
-    
-    # Get selected sources
+
     selected_urls = state["selected_sources"]
     if not selected_urls:
         log_chain_of_thought(state, "No sources selected for citations")
         return state
-    
-    # Initialize citation manager if not already in state
+
     if "citation_manager" not in state:
         state["citation_manager"] = CitationManager()
         # For backward compatibility
@@ -45,10 +43,9 @@ async def format_citations_node(llm, progress_callback, state: AgentState) -> Ag
     
     # Register each source with the citation manager
     for url in selected_urls:
-        # Find full source metadata
+
         source_meta = next((s for s in state["sources"] if s.get("url") == url), {})
-        
-        # Create a SourceInfo object
+
         source_info = SourceInfo(
             url=url,
             title=source_meta.get("title", ""),
@@ -60,8 +57,7 @@ async def format_citations_node(llm, progress_callback, state: AgentState) -> Ag
             reliability_score=0.8,  # Default score, could be more dynamic
             metadata=source_meta
         )
-        
-        # Add to citation manager
+
         citation_manager.add_source(source_info)
         
         # For backward compatibility, also register with citation registry
@@ -72,8 +68,7 @@ async def format_citations_node(llm, progress_callback, state: AgentState) -> Ag
             "snippet": source_meta.get("snippet", ""),
             "source": source_meta.get("source", "")
         })
-    
-    # Format citations using the enhanced citation manager
+
     formatted_citations = await format_citations(
         llm, 
         selected_urls, 

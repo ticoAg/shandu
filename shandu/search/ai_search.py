@@ -42,8 +42,7 @@ class AISearchResult:
             if snippet:
                 md.append(f"- **Snippet:** {snippet}")
             md.append("")
-            
-        # Add citation statistics if available
+
         if self.citation_stats:
             md.append("## Research Process")
             md.append(f"- **Sources Analyzed**: {self.citation_stats.get('total_sources', len(self.sources))}")
@@ -96,8 +95,7 @@ class AISearcher:
         self.citation_manager = citation_manager or CitationManager()
         self.max_results = max_results
         self.max_pages_to_scrape = max_pages_to_scrape
-        
-        # Initialize DuckDuckGo search tools
+
         self.ddg_search = DuckDuckGoSearchRun()
         self.ddg_results = DuckDuckGoSearchResults(output_format="list")
     
@@ -128,7 +126,7 @@ class AISearcher:
         # Use DuckDuckGo tools if enabled
         if use_ddg_tools and (not engines or 'duckduckgo' in engines):
             try:
-                # Get structured results with metadata using DuckDuckGoSearchResults
+
                 ddg_structured_results = self.ddg_results.invoke(query)
                 for result in ddg_structured_results[:self.max_results]:
                     source_info = {
@@ -202,7 +200,7 @@ class AISearcher:
         # Prepare sources with improved citation format
         aggregated_text = ""
         for i, source in enumerate(sources, 1):
-            # Extract domain from URL
+
             url = source.get('url', '')
             domain = url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source"
             # Capitalize first letter of domain for a more professional look
@@ -242,8 +240,7 @@ Sources:
 """
         
         final_output = await self.llm.ainvoke(final_prompt)
-                
-        # Get citation statistics if any sources were analyzed
+
         citation_stats = None
         if sources:
             citation_stats = {
@@ -270,11 +267,9 @@ Sources:
             title = source.get('title', 'Untitled')
             snippet = source.get('snippet', '')
             source_type = source.get('source', 'web')
-            
-            # Extract domain from URL
+
             domain = url.split("//")[1].split("/")[0] if "//" in url else "unknown"
-            
-            # Create a SourceInfo object
+
             source_info = SourceInfo(
                 url=url,
                 title=title,
@@ -286,8 +281,7 @@ Sources:
                 reliability_score=0.8,  # Default score
                 metadata=source
             )
-            
-            # Add to citation manager
+
             return self.citation_manager.add_source(source_info)
             
         except Exception as e:

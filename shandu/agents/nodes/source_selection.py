@@ -25,8 +25,7 @@ async def smart_source_selection(llm, progress_callback, state: AgentState) -> A
     """Select relevant sources for the report using structured output."""
     state["status"] = "Selecting most valuable sources"
     console.print("[bold blue]Selecting most relevant and high-quality sources...[/]")
-    
-    # Get all sources found during research
+
     all_source_urls = []
     for analysis in state["content_analysis"]:
         if "sources" in analysis and isinstance(analysis["sources"], list):
@@ -36,17 +35,16 @@ async def smart_source_selection(llm, progress_callback, state: AgentState) -> A
     
     # If we have too many sources, use smart selection to filter them
     if len(all_source_urls) > 25:
-        # Format the sources to be evaluated
+
         sources_text = ""
         for i, url in enumerate(all_source_urls, 1):
-            # Find the source metadata if available
+
             source_meta = {}
             for source in state["sources"]:
                 if source.get("url") == url:
                     source_meta = source
                     break
-            
-            # Add source information to the text
+
             sources_text += f"Source {i}:\nURL: {url}\n"
             if source_meta.get("title"):
                 sources_text += f"Title: {source_meta.get('title')}\n"
@@ -80,24 +78,21 @@ INSTRUCTIONS:
 """
             # Send the prompt directly to the model
             response = await llm.ainvoke(direct_prompt)
-            
-            # Process the response directly
+
             response_text = response.content
-            
-            # Extract sources from the response
+
             selected_urls = []
             lines = response_text.split('\n')
             
             # Iterate through each line looking for URLs
             for line in lines:
-                # Check if the line contains a URL from our all_source_urls list
+
                 for url in all_source_urls:
                     if url in line:
                         if url not in selected_urls:
                             selected_urls.append(url)
                             break
-            
-            # Extract rationale if possible
+
             rationale = "Sources were selected based on relevance, credibility, and coverage of key aspects."
             rationale_section = re.search(r'(?:rationale|reasoning|explanation|justification)(?:\s*:|\s*\n)([^#]*?)(?:$|#)', response_text.lower(), re.IGNORECASE | re.DOTALL)
             if rationale_section:
@@ -108,6 +103,9 @@ INSTRUCTIONS:
             
         except Exception as e:
             console.print(f"[dim red]Error in structured source selection: {str(e)}. Using simpler approach.[/dim red]")
+            from ...utils.logger import log_error
+            log_error("Error in structured source selection", e, 
+                 context=f"Query: {state['query']}, Function: smart_source_selection")
             current_file = os.path.basename(__file__)
             #with open('example.txt', 'a') as file:
                 # Append the current file's name and some text
@@ -124,8 +122,7 @@ From these sources:
 
 Return ONLY the URLs, one per line.
 """)
-                
-                # Extract the selected sources from the result
+
                 selected_urls = []
                 for url in all_source_urls:
                     if url in response.content:

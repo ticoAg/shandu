@@ -28,7 +28,6 @@ class SearchResultAnalysis(BaseModel):
         description="Analysis of the search results"
     )
 
-# Set up logging
 logger = logging.getLogger(__name__)
 
 async def search_node(llm, searcher, scraper, progress_callback, state: AgentState) -> AgentState:
@@ -57,8 +56,7 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
         recent_queries = state["subqueries"][-breadth:]
     else:
         recent_queries = [state["query"]]
-    
-    # Process queries in batches for better concurrency control
+
     async def process_query(query, query_idx):
         if is_shutdown_requested():
             log_chain_of_thought(state, f"Shutdown requested, stopping search after {query_idx} queries")
@@ -93,8 +91,7 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
         for batch in url_batches:
             if is_shutdown_requested():
                 break
-                
-            # Process URL relevance checks concurrently but with a limit
+
             relevance_tasks = []
             for result in batch:
                 relevance_task = is_relevant_url(llm, result.url, result.title, result.snippet, query)
@@ -106,8 +103,7 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
                     is_relevant = await relevance_task
                     if is_relevant:
                         relevant_urls.append(result)
-                        
-                        # Add to sources
+
                         state["sources"].append({
                             "url": result.url,
                             "title": result.title,
@@ -143,12 +139,10 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
             logger.error(f"Error scraping URLs for query '{query}': {e}")
             log_chain_of_thought(state, f"Error scraping URLs for query '{query}': {str(e)}")
             return
-            
-        # Process each scraped item
+
         processed_items = []
         successful_scrapes = [item for item in scraped_contents if item.is_successful()]
-        
-        # Process in smaller batches for better throughput
+
         for item in successful_scrapes:
             if is_shutdown_requested():
                 break
@@ -167,7 +161,7 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
         # Prepare content for analysis in a structured way
         combined_content = ""
         for item in processed_items:
-            # Format with clear source markers for better attribution
+
             combined_content += f"\n\n## SOURCE: {item['item'].url}\n"
             combined_content += f"## TITLE: {item['item'].title or 'No title'}\n"
             combined_content += f"## RELIABILITY: {item['rating']}\n"
@@ -186,8 +180,7 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
         log_chain_of_thought(state, f"Analyzed content for query: {query}")
         if progress_callback:
             await _call_progress_callback(progress_callback, state)
-    
-    # Process queries in parallel with concurrency control
+
     tasks = []
     for idx, query in enumerate(recent_queries):
         tasks.append(process_query(query, idx))
@@ -197,8 +190,7 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
     
     state["current_depth"] += 1
     log_chain_of_thought(state, f"Completed depth {state['current_depth']} of {state['depth']}")
-    
-    # Update UI (only if not already in progress to avoid repetition)
+
     if progress_callback and state.get("status") != "Searching":
         state["status"] = "Searching completed"
         await _call_progress_callback(progress_callback, state)

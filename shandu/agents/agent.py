@@ -45,16 +45,13 @@ class ResearchAgent:
         self.max_depth = max_depth
         self.breadth = breadth
         self.max_urls_per_query = max_urls_per_query
-        
-        # Initialize prompts
+
         self.system_prompt = ChatPromptTemplate.from_template(SYSTEM_PROMPTS["research_agent"])
         self.reflection_prompt = ChatPromptTemplate.from_template(USER_PROMPTS["reflection"])
         self.query_gen_prompt = ChatPromptTemplate.from_template(USER_PROMPTS["query_generation"])
-        
-        # Initialize tools
+
         self.tools = self._setup_tools()
-        
-        # Initialize agent
+
         self.agent = initialize_agent(
             tools=self.tools,
             llm=self.llm,
@@ -109,8 +106,7 @@ class ResearchAgent:
             "questions": questions,
             "breadth": self.breadth
         })
-        
-        # Parse the result into a list of queries
+
         queries = [q.strip() for q in result.split("\n") if q.strip()]
         return queries[:self.breadth]
 
@@ -143,7 +139,7 @@ class ResearchAgent:
         # Prepare content for analysis
         content_text = ""
         for item in content:
-            # Add source to citation manager
+
             source_info = SourceInfo(
                 url=item.url,
                 title=item.title,
@@ -154,8 +150,7 @@ class ResearchAgent:
                 metadata=item.metadata
             )
             self.citation_manager.add_source(source_info)
-            
-            # Format content for analysis
+
             content_text += f"\nSource: {item.url}\nTitle: {item.title}\n"
             content_text += f"Content Summary:\n{item.text[:2000]}...\n"
         
@@ -167,8 +162,7 @@ class ResearchAgent:
         
         analysis_chain = analysis_prompt | self.llm | StrOutputParser()
         analysis = await analysis_chain.ainvoke({"query": query, "content": content_text})
-        
-        # Extract learnings from analysis and register them with citation manager
+
         for item in content:
             # Use citation manager to extract and register learnings
             learning_hashes = self.citation_manager.extract_learning_from_text(
@@ -191,8 +185,7 @@ class ResearchAgent:
     ) -> ResearchResult:
         """Execute the research process with enhanced citation tracking."""
         depth = depth if depth is not None else self.max_depth
-        
-        # Initialize research context
+
         context = {
             "query": query,
             "depth": depth,
@@ -232,8 +225,7 @@ class ResearchAgent:
                     subquery,
                     engines=engines
                 )
-                
-                # Extract URLs for scraping
+
                 urls_to_scrape = await self._extract_urls_from_results(
                     search_results,
                     self.max_urls_per_query
@@ -256,8 +248,7 @@ class ResearchAgent:
                             "sources": analysis["sources"],
                             "learnings": analysis.get("learnings", 0)
                         })
-                
-                # Add results to context
+
                 for r in search_results:
                     if isinstance(r, SearchResult):
                         context["sources"].append(r.to_dict())
@@ -267,8 +258,7 @@ class ResearchAgent:
                         print(f"Warning: Skipping non-serializable search result: {type(r)}")
                 
                 context["findings"] += f"\n\nFindings for '{subquery}':\n{agent_result}"
-                
-                # Add content analysis if available
+
                 if context["content_analysis"]:
                     latest_analysis = context["content_analysis"][-1]
                     context["findings"] += f"\n\nDetailed Analysis:\n{latest_analysis['analysis']}"
@@ -281,13 +271,11 @@ class ResearchAgent:
         for source in context["sources"]:
             # Source is already a dictionary at this point
             source_dict = source.copy()  # Make a copy to avoid modifying the original
-            
-            # Add any content analysis related to this source
+
             for analysis in context["content_analysis"]:
                 if source.get("url", "") in analysis["sources"]:
                     source_dict["detailed_analysis"] = analysis["analysis"]
-            
-            # Add learnings from citation manager if available
+
             if source.get("url") in self.citation_manager.source_to_learnings:
                 source_url = source.get("url")
                 learning_ids = self.citation_manager.source_to_learnings.get(source_url, [])
@@ -295,8 +283,7 @@ class ResearchAgent:
                 context["learnings_by_source"][source_url] = len(learning_ids)
                 
             detailed_sources.append(source_dict)
-        
-        # Get citation statistics
+
         citation_stats = {
             "total_sources": len(self.citation_manager.sources),
             "total_learnings": len(self.citation_manager.learnings),

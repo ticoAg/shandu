@@ -50,9 +50,7 @@ Return ONLY the search queries themselves, one per line, with no additional text
 """
         # Send the prompt directly to the model
         response = await llm.ainvoke(direct_prompt)
-        
-        # Process the generated queries
-        # Extract direct search queries without any formatting or headers
+
         new_queries = [line.strip() for line in response.content.split("\n") if line.strip()]
         # Remove any numbering, bullet points, or other formatting
         new_queries = [re.sub(r'^[\d\s\-\*•\.\)]+\s*', '', line).strip() for line in new_queries]
@@ -66,13 +64,14 @@ Return ONLY the search queries themselves, one per line, with no additional text
         log_chain_of_thought(state, f"Generated {len(new_queries)} search queries for investigation")
         
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in structured query generation", e, 
+                 context=f"Query: {state['query']}, Function: generate_queries_node")
         console.print(f"[dim red]Error in structured query generation: {str(e)}. Using simpler approach.[/dim red]")
         try:
             # Even simpler fallback approach
             response = await llm.ainvoke(f"Generate {state['breadth']} simple search queries for {state['query']}. Return only the queries, one per line.")
-            
-            # Process the generated queries
-            # Extract direct search queries without any formatting or headers
+
             new_queries = [line.strip() for line in response.content.split("\n") if line.strip()]
             # Remove any numbering, bullet points, or other formatting
             new_queries = [re.sub(r'^[\d\s\-\*•\.\)]+\s*', '', line).strip() for line in new_queries]
@@ -84,8 +83,7 @@ Return ONLY the search queries themselves, one per line, with no additional text
             new_queries = new_queries[:state["breadth"]]
         except Exception as e2:
             console.print(f"[dim red]Error in fallback query generation: {str(e2)}. Using default queries.[/dim red]")
-            
-            # Create default queries if all else fails
+
             new_queries = [
                 f"{state['query']} latest research",
                 f"{state['query']} examples",

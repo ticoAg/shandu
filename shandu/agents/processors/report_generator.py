@@ -58,8 +58,7 @@ async def generate_title(llm: ChatOpenAI, query: str) -> str:
     "Quantum Computing Applications in Cryptography"
     "Clean Energy Transition: Global Market Trends"
     """
-    
-    # Create a user message with the query directly included
+
     user_message = f"Create a professional, concise title (8 words max) for research about: {query}"
     
     prompt = ChatPromptTemplate.from_messages([
@@ -85,17 +84,15 @@ async def generate_title(llm: ChatOpenAI, query: str) -> str:
         # Use a direct, simplified approach
         simple_llm = llm.with_config({"temperature": 0.2})
         response = await simple_llm.ainvoke(direct_prompt)
-        
-        # Clean up any formatting
+
         clean_title = response.content.replace("Title:", "").replace("\"", "").strip()
         return clean_title
     except Exception as e:
         print(f"Error in structured title generation: {str(e)}. Using simpler approach.")
-        current_file = os.path.basename(__file__)
-        #with open('example.txt', 'a') as file:
-            # Append the current file's name and some text
-            #file.write(f'This line was written by: {current_file}\n')
-            #file.write(f'Error {e}.\n')
+
+        from ...utils.logger import log_error
+        log_error("Error in structured title generation", e, 
+                 context=f"Query: {query}, Function: generate_title")
         # Fallback to non-structured approach
         simple_prompt = ChatPromptTemplate.from_messages([
             ("system", "Create a professional, concise title (8 words max) for a research report."),
@@ -105,8 +102,7 @@ async def generate_title(llm: ChatOpenAI, query: str) -> str:
         simple_llm = llm.with_config({"temperature": 0.2})
         simple_chain = simple_prompt | simple_llm
         title = await simple_chain.ainvoke({})
-        
-        # Clean up any formatting
+
         clean_title = title.content.replace("Title: ", "").replace("\"", "").strip()
         
         return clean_title
@@ -121,8 +117,7 @@ async def extract_themes(llm: ChatOpenAI, findings: str) -> str:
     Extract 4-7 major themes (dont mention word Theme)from the content that would make logical report sections.
     These themes should emerge naturally from the content rather than following a predetermined structure.
     For each theme, provide a brief description of what content would be included."""
-    
-    # Create a user message with the findings directly included
+
     user_message = f"Analyze these research findings and extract 4-7 key themes that should be used as main sections in a report:\n\n{findings}"
     
     prompt = ChatPromptTemplate.from_messages([
@@ -153,11 +148,14 @@ async def extract_themes(llm: ChatOpenAI, findings: str) -> str:
         # Use direct approach
         simple_llm = llm.with_config({"temperature": 0.3})
         response = await simple_llm.ainvoke(direct_prompt)
-        
-        # Return the formatted themes
+
         return response.content
     except Exception as e:
         print(f"Error in structured theme extraction: {str(e)}. Using simpler approach.")
+
+        from ...utils.logger import log_error
+        log_error("Error in structured theme extraction", e, 
+                 context=f"Findings length: {len(findings)}, Function: extract_themes")
         
         # Fallback to non-structured approach
         simple_prompt = ChatPromptTemplate.from_messages([
@@ -203,7 +201,7 @@ async def format_citations(
     
     # If we have a citation registry, use it to get all properly cited sources
     if citation_registry:
-        # Get all citation IDs and their corresponding URLs
+
         all_citations = citation_registry.get_all_citations()
         
         # Only format citations that were actually used
@@ -212,11 +210,9 @@ async def format_citations(
         for cid in sorted(all_citations.keys()):
             citation_info = all_citations[cid]
             url = citation_info.get("url")
-            
-            # Find the source metadata if available
+
             source_meta = next((s for s in sources if s.get("url") == url), {})
-            
-            # Extract domain from URL
+
             domain = url.split("//")[1].split("/")[0] if "//" in url else "Unknown Source"
             title = source_meta.get("title", citation_info.get("title", "Untitled"))
             date = source_meta.get("date", citation_info.get("date", "n.d."))
@@ -226,18 +222,16 @@ async def format_citations(
         
         if citations:
             return "\n".join(citations)
-    
 
     sources_text = ""
     for i, url in enumerate(selected_sources, 1):
-        # Find the source metadata if available
+
         source_meta = {}
         for source in sources:
             if source.get("url") == url:
                 source_meta = source
                 break
-        
-        # Add source information to the text
+
         sources_text += f"Source {i}:\nURL: {url}\n"
         if source_meta.get("title"):
             sources_text += f"Title: {source_meta.get('title')}\n"
@@ -275,8 +269,7 @@ async def format_citations(
     Number citations sequentially starting from [1].
     Place each citation on a new line.
     """
-    
-    # Create a user message with the sources directly included
+
     user_message = f"Format these sources into proper citations:\n\n{sources_text}"
     
     citation_prompt = ChatPromptTemplate.from_messages([
@@ -289,7 +282,7 @@ async def format_citations(
     
     # Verify citations have proper format [n] at the beginning
     if not re.search(r'\[\d+\]', formatted_citations):
-        # Add fallback formatting if needed
+
         citations = []
         for i, url in enumerate(selected_sources, 1):
             source_meta = next((s for s in sources if s.get("url") == url), {})
@@ -320,13 +313,11 @@ async def generate_initial_report(
     """Generate the initial report draft using structured output."""
     # Use structured output for initial report generation
     structured_llm = llm.with_structured_output(InitialReport, method="function_calling")
-    
-    # Add objective instruction based on include_objective flag
+
     objective_instruction = ""
     if not include_objective:
         objective_instruction = "\n\nIMPORTANT: DO NOT include an \"Objective\" section at the beginning of the report. Let your content and analysis naturally determine the structure."
-    
-    # Extract available citation sources for the prompt
+
     available_sources_text = ""
     if citation_registry:
         available_sources = []
@@ -358,8 +349,7 @@ async def generate_initial_report(
     - Do not cite sources that aren't in the available sources list
     - Ensure each major claim or statistic has an appropriate citation
     """
-    
-    # Create a user message with all variables directly included
+
     user_message = f"""Create an extensive, in-depth research report on this topic.
 
 Title: {report_title}
@@ -381,8 +371,7 @@ IMPORTANT: Begin your report with the exact title provided: "{report_title}" - d
         ("system", system_prompt),
         ("user", user_message)
     ])
-    
-    # Format the selected sources for the report
+
     sources_text = "\n\nSOURCES ANALYZED IN DETAIL:\n"
     if formatted_citations:
         sources_text += formatted_citations
@@ -392,8 +381,7 @@ IMPORTANT: Begin your report with the exact title provided: "{report_title}" - d
     
     # Augment findings with selected source information
     augmented_findings = findings + sources_text
-    
-    # Generate the initial detailed report
+
     try:
         # Direct non-structured approach to avoid errors
         # Direct non-structured approach to avoid errors
@@ -412,6 +400,7 @@ REPORT REQUIREMENTS:
 - Base the report ENTIRELY on the provided research findings.
 - As of {current_date}, incorporate the most up-to-date information available.
 - Create a dynamic structure based on the content themes rather than a rigid template.
+- CRITICALLY IMPORTANT: DO NOT include the original query text at the beginning of the report. Start directly with the title.
 
 CITATION REQUIREMENTS:
 - ONLY use the citation IDs provided in the AVAILABLE SOURCES list
@@ -438,11 +427,10 @@ FORMAT (IMPORTANT):
         
     except Exception as e:
         print(f"Error in structured report generation: {str(e)}. Using simpler approach.")
-        current_file = os.path.basename(__file__)
-        #with open('example.txt', 'a') as file:
-            # Append the current file's name and some text
-            #file.write(f'This line was written by: {current_file}\n')
-            #file.write(f'Error {e}.\n')
+
+        from ...utils.logger import log_error
+        log_error("Error in structured report generation", e, 
+                 context=f"Query: {query}, Report title: {report_title}, Function: generate_initial_report")
         # Fallback to simpler report generation without structured output
         simple_prompt = ChatPromptTemplate.from_messages([
             ("system", f"""Generate a comprehensive research report based on the provided findings.
@@ -467,23 +455,20 @@ async def enhance_report(
     citation_registry: Optional[CitationRegistry] = None
 ) -> str:
     """Enhance the report with additional detail while preserving structure."""
-    # Check if we have a valid report to enhance
+
     if not initial_report or len(initial_report.strip()) < 500:
         return initial_report
-    
-    # Extract the title from the initial report to ensure consistency
+
     title_match = re.match(r'# ([^\n]+)', initial_report)
     original_title = title_match.group(1) if title_match else "xxx"
-    
-    # Extract all sections to preserve structure
+
     section_pattern = re.compile(r'(#+\s+[^\n]+)(\n\n[^#]+?)(?=\n#+\s+|\Z)', re.DOTALL)
     sections = section_pattern.findall(initial_report)
     
     if not sections:
         # If no sections found, return the initial report
         return initial_report
-    
-    # Process each section individually to maintain structure
+
     enhanced_report = f"# {original_title}\n\n"
     
     for section_header, section_content in sections:
@@ -491,8 +476,7 @@ async def enhance_report(
         if "References" in section_header:
             enhanced_report += f"{section_header}{section_content}\n\n"
             continue
-            
-        # Extract available citation sources for the prompt
+
         available_sources_text = ""
         if citation_registry:
             available_sources = []
@@ -504,8 +488,7 @@ async def enhance_report(
             
             if available_sources:
                 available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
-                
-        # Create a prompt for enhancing just this section
+
         section_prompt = f"""Enhance this section of a research report with additional depth and detail:
 
 {section_header}{section_content}{available_sources_text}
@@ -540,12 +523,10 @@ Return the enhanced section with the exact same heading but with expanded conten
             # Use a lower token limit for each section to avoid issues
             enhance_llm = llm.with_config({"max_tokens": 4096, "temperature": 0.2})
             response = await enhance_llm.ainvoke(section_prompt)
-            
-            # Clean up any potential markup errors
+
             section_text = response.content
             section_text = re.sub(r'\[/[^\]]*\]', '', section_text)  # Remove any malformed closing tags
-            
-            # Ensure the section starts with the original header
+
             if not section_text.strip().startswith(section_header.strip()):
                 section_text = f"{section_header}\n\n{section_text}"
                 
@@ -569,11 +550,9 @@ async def expand_key_sections(
     # Make sure we have a properly formatted report to start with
     if not report or len(report.strip()) < 1000:
         return report
-    
-    # Clean any potentially harmful PDF-style tags before starting
+
     report = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', report)
-    
-    # Extract sections from the report using a more robust pattern
+
     section_pattern = re.compile(r'(## [^\n]+)(\n\n[^#]+?)(?=\n##|\Z)', re.DOTALL)
     sections = section_pattern.findall(report)
     
@@ -599,8 +578,7 @@ async def expand_key_sections(
     expanded_report = report
     for section_header, section_content in important_sections:
         title = section_header.replace('#', '').strip()
-        
-        # Extract available citation sources for the prompt
+
         available_sources_text = ""
         if citation_registry:
             available_sources = []
@@ -612,8 +590,7 @@ async def expand_key_sections(
             
             if available_sources:
                 available_sources_text = "\n\nAVAILABLE SOURCES FOR CITATION:\n" + "\n".join(available_sources)
-        
-        # Create a prompt for expanding just this section
+
         section_prompt = f"""Expand this section of a research report with much greater depth and detail:
 
 {section_header}{section_content}{available_sources_text}
@@ -649,13 +626,11 @@ Return the expanded section with the exact same heading but with expanded conten
             # Use a reasonable token limit for each section
             expand_llm = llm.with_config({"max_tokens": 6144, "temperature": 0.2})
             response = await expand_llm.ainvoke(section_prompt)
-            
-            # Clean up any potential markup errors
+
             expanded_content = response.content
             # More thorough cleanup of any PDF/markup tags
             expanded_content = re.sub(r'\[\/?(?:PDF|Text|ImageB|ImageC|ImageI)(?:\/?|\])(?:[^\]]*\])?', '', expanded_content)
-            
-            # Ensure the section starts with the original header
+
             if not expanded_content.strip().startswith(section_header.strip()):
                 expanded_content = f"{section_header}\n\n{expanded_content}"
             

@@ -67,7 +67,7 @@ class ResearchGraph:
 
     def _build_graph(self):
         """Build the research graph."""
-        # Create wrapped node functions that properly handle async coroutines
+
         init_node = create_node_wrapper(lambda state: initialize_node(self.llm, self.date, self.progress_callback, state))
         reflect = create_node_wrapper(lambda state: reflect_node(self.llm, self.progress_callback, state))
         gen_queries = create_node_wrapper(lambda state: generate_queries_node(self.llm, self.progress_callback, state))
@@ -107,7 +107,6 @@ class ResearchGraph:
         self.include_objective = include_objective
         self.detail_level = detail_level
 
-        # Validate parameters to prevent errors
         depth = max(1, min(5, depth))  # Ensure depth is between 1 and 5
         breadth = max(1, min(10, breadth))  # Ensure breadth is between 1 and 10
 
@@ -161,8 +160,7 @@ class ResearchGraph:
             )
         except KeyboardInterrupt:
             console.print("\n[yellow]Research interrupted by user. Generating report with current findings...[/]")
-            
-            # Generate a report with what we have so far
+
             elapsed_time = time.time() - state["start_time"]
             minutes, seconds = divmod(int(elapsed_time), 60)
             

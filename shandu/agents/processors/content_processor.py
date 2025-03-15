@@ -76,6 +76,12 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
     if any(domain in url.lower() for domain in irrelevant_domains):
         return False
 
+    # Escape any literal curly braces in the inputs
+    safe_url = url.replace("{", "{{").replace("}", "}}")
+    safe_title = title.replace("{", "{{").replace("}", "}}")
+    safe_snippet = snippet.replace("{", "{{").replace("}", "}}")
+    safe_query = query.replace("{", "{{").replace("}", "}}")
+    
     # Use structured output for relevance check
     structured_llm = llm.with_structured_output(UrlRelevanceResult)
     system_prompt = (
@@ -85,8 +91,8 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
         "Provide a structured response with your decision and reasoning.\n"
     )
     user_content = (
-        f"Query: {query}\n\n"
-        f"Search Result:\nTitle: {title}\nURL: {url}\nSnippet: {snippet}\n\n"
+        f"Query: {safe_query}\n\n"
+        f"Search Result:\nTitle: {safe_title}\nURL: {safe_url}\nSnippet: {safe_snippet}\n\n"
         "Is this result relevant to the query?"
     )
     # Build the prompt chain by piping the prompt into the structured LLM.
@@ -101,14 +107,23 @@ async def is_relevant_url(llm: ChatOpenAI, url: str, title: str, snippet: str, q
         result = await chain.ainvoke(mapping)
         return result.is_relevant
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in structured relevance check", e, 
+                 context=f"Query: {query}, Function: is_relevant_url")
         console.print(f"[dim red]Error in structured relevance check: {str(e)}. Using simpler approach.[/dim red]")
+        # Escape any literal curly braces in the fallback prompt
+        safe_fb_url = url.replace("{", "{{").replace("}", "}}")
+        safe_fb_title = title.replace("{", "{{").replace("}", "}}")
+        safe_fb_snippet = snippet.replace("{", "{{").replace("}", "}}")
+        safe_fb_query = query.replace("{", "{{").replace("}", "}}")
+        
         simple_prompt = (
             f"Evaluate if this search result is RELEVANT or NOT RELEVANT to the query.\n"
             "Answer with ONLY \"RELEVANT\" or \"NOT RELEVANT\".\n\n"
-            f"Query: {query}\n"
-            f"Title: {title}\n"
-            f"URL: {url}\n"
-            f"Snippet: {snippet}"
+            f"Query: {safe_fb_query}\n"
+            f"Title: {safe_fb_title}\n"
+            f"URL: {safe_fb_url}\n"
+            f"Snippet: {safe_fb_snippet}"
         )
         response = await llm.ainvoke(simple_prompt)
         result_text = response.content
@@ -119,6 +134,12 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
     Process a scraped item to evaluate reliability and extract content using structured output.
     """
     try:
+        # Escape any literal curly braces in the content to avoid format string errors
+        safe_content = main_content[:8000].replace("{", "{{").replace("}", "}}")
+        safe_url = item.url.replace("{", "{{").replace("}", "}}")
+        safe_title = item.title.replace("{", "{{").replace("}", "}}")
+        safe_subquery = subquery.replace("{", "{{").replace("}", "}}")
+        
         structured_llm = llm.with_structured_output(ContentRating)
         system_prompt = (
             "You are analyzing web content for reliability and extracting the most relevant information.\n\n"
@@ -133,11 +154,11 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
         )
         user_message = (
             f"Analyze this web content:\n\n"
-            f"URL: {item.url}\n"
-            f"Title: {item.title}\n"
-            f"Query: {subquery}\n\n"
+            f"URL: {safe_url}\n"
+            f"Title: {safe_title}\n"
+            f"Query: {safe_subquery}\n\n"
             "Content:\n"
-            f"{main_content[:8000]}  # Limit content length"
+            f"{safe_content}"
         )
         prompt = ChatPromptTemplate.from_messages([
             {"role": "system", "content": system_prompt},
@@ -154,19 +175,28 @@ async def process_scraped_item(llm: ChatOpenAI, item: ScrapedContent, subquery: 
             "content": result.extracted_content
         }
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in structured content processing", e, 
+                 context=f"Query: {subquery}, Function: process_scraped_item")
         console.print(f"[dim red]Error in structured content processing: {str(e)}. Using simpler approach.[/dim red]")
         current_file = os.path.basename(__file__)
+        # Escape any literal curly braces in the fallback content
+        safe_shorter_content = main_content[:5000].replace("{", "{{").replace("}", "}}")
+        safe_fb_url = item.url.replace("{", "{{").replace("}", "}}")
+        safe_fb_title = item.title.replace("{", "{{").replace("}", "}}")
+        safe_fb_subquery = subquery.replace("{", "{{").replace("}", "}}")
+        
         simple_prompt = (
             f"Analyze web content for reliability (HIGH/MEDIUM/LOW) and extract relevant information.\n"
             "Format your response as:\n"
             "RELIABILITY: [rating]\n"
             "JUSTIFICATION: [brief explanation]\n"
             "EXTRACTED_CONTENT: [relevant content]\n\n"
-            f"URL: {item.url}\n"
-            f"Title: {item.title}\n"
-            f"Query: {subquery}\n\n"
+            f"URL: {safe_fb_url}\n"
+            f"Title: {safe_fb_title}\n"
+            f"Query: {safe_fb_subquery}\n\n"
             "Content:\n"
-            f"{main_content[:5000]}"
+            f"{safe_shorter_content}"
         )
         response = await llm.ainvoke(simple_prompt)
         content = response.content
@@ -216,9 +246,13 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
             "Provide a comprehensive analysis that synthesizes the most relevant information "
             "from these sources, organized into a well-structured format with key findings."
         )
+        # Escape any literal curly braces in the content to avoid format string errors
+        system_prompt_escaped = system_prompt.replace("{", "{{").replace("}", "}}")
+        user_message_escaped = user_message.replace("{", "{{").replace("}", "}}")
+        
         prompt = ChatPromptTemplate.from_messages([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message}
+            {"role": "system", "content": system_prompt_escaped},
+            {"role": "user", "content": user_message_escaped}
         ])
         mapping = {"query": subquery}
         # Chain the prompt with the structured LLM (using a modified config if needed)
@@ -234,12 +268,19 @@ async def analyze_content(llm: ChatOpenAI, subquery: str, content_text: str) -> 
         formatted_analysis += f"\n### Source Evaluation\n\n{result.source_evaluation}\n"
         return formatted_analysis
     except Exception as e:
+        from ...utils.logger import log_error
+        log_error("Error in structured content analysis", e, 
+                 context=f"Query: {subquery}, Function: analyze_content")
         console.print(f"[dim red]Error in structured content analysis: {str(e)}. Using simpler approach.[/dim red]")
+        # Escape any literal curly braces in the fallback content
+        safe_ac_subquery = subquery.replace("{", "{{").replace("}", "}}")
+        safe_ac_content = content_text[:5000].replace("{", "{{").replace("}", "}}")
+        
         simple_prompt = (
             f"Analyze and synthesize information from multiple web sources.\n"
             "Provide a concise but comprehensive analysis of the content related to the query.\n\n"
-            f"Analyze content related to: {subquery}\n\n"
-            f"{content_text[:5000]}"
+            f"Analyze content related to: {safe_ac_subquery}\n\n"
+            f"{safe_ac_content}"
         )
         simple_llm = llm.with_config({"timeout": 60})
         response = await simple_llm.ainvoke(simple_prompt)

@@ -29,7 +29,6 @@ CACHE_ENABLED = True
 CACHE_DIR = os.path.expanduser("~/.shandu/cache/search")
 CACHE_TTL = 86400  # 24 hours in seconds
 
-# Create cache directory if it doesn't exist
 if CACHE_ENABLED and not os.path.exists(CACHE_DIR):
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -76,7 +75,8 @@ class UnifiedSearcher:
         self.cache_enabled = cache_enabled
         self.cache_ttl = cache_ttl
         self.in_progress_queries: Set[str] = set()  # Track queries being processed to prevent duplicates
-        self.semaphore = asyncio.Semaphore(5)  # Limit concurrent engine searches to 5
+        self._semaphores = {}  # Dictionary to store semaphores for each event loop
+        self._semaphore_lock = asyncio.Lock()  # Lock for thread-safe access to semaphores
         
         # Try to use fake_useragent if available
         try:
@@ -97,15 +97,14 @@ class UnifiedSearcher:
             return None
             
         try:
-            # Check if cache is expired
+
             if time.time() - os.path.getmtime(cache_path) > self.cache_ttl:
                 return None
                 
             # Load cached content
             with open(cache_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-            
-            # Convert to SearchResult objects
+
             results = []
             for item in data:
                 results.append(SearchResult(
@@ -128,7 +127,7 @@ class UnifiedSearcher:
         cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
         
         try:
-            # Create a serializable representation
+
             data = [result.to_dict() for result in results]
             
             with open(cache_path, 'w', encoding='utf-8') as f:
@@ -152,15 +151,13 @@ class UnifiedSearcher:
         """
         if engines is None:
             engines = ["google"]
-        
-        # Ensure engines is a list
+
         if isinstance(engines, str):
             engines = [engines]
         
         # Use set to ensure unique engine names (case insensitive)
         unique_engines = set(engine.lower() for engine in engines)
-        
-        # Create tasks for each engine with proper concurrency control
+
         tasks = []
         for engine in unique_engines:
             # Skip unsupported engines
@@ -196,8 +193,7 @@ class UnifiedSearcher:
                 logger.error(f"Error during search: {result}")
             else:
                 all_results.extend(result)
-        
-        # Process results: remove duplicates, shuffle, and limit
+
         unique_urls = set()
         unique_results = []
         
@@ -219,14 +215,16 @@ class UnifiedSearcher:
         
         while retries <= max_retries:
             try:
-                # Add a small random delay to avoid rate limiting
+
                 if retries > 0:
                     delay = random.uniform(1.0, 3.0) * retries
                     await asyncio.sleep(delay)
-                    
+
+                semaphore = await self._get_semaphore()
+                
                 # Acquire semaphore to limit concurrent searches
-                async with self.semaphore:
-                    # Add jitter for concurrent requests
+                async with semaphore:
+
                     await asyncio.sleep(random.uniform(0.1, 0.5))
                     
                     # Execute the search
@@ -260,7 +258,7 @@ class UnifiedSearcher:
             results = []
             google_results = list(google_search(query, num_results=self.max_results))
             for j in google_results:
-                # Create a search result
+
                 result = SearchResult(
                     url=j,
                     title=j,  # We don't have titles from this library
@@ -287,10 +285,10 @@ class UnifiedSearcher:
             query: Original query
         """
         try:
-            # Create a session
+
             timeout = aiohttp.ClientTimeout(total=15)  # 15 second timeout
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                # Get the Google search page
+
                 url = f"https://www.google.com/search?q={quote_plus(query)}"
                 headers = {"User-Agent": self.user_agent}
                 
@@ -298,25 +296,20 @@ class UnifiedSearcher:
                     if response.status != 200:
                         logger.warning(f"Google search returned status code {response.status}")
                         return
-                    
-                    # Parse the HTML
+
                     html = await response.text()
                     soup = BeautifulSoup(html, features="html.parser")
-                    
-                    # Find search results
+
                     search_divs = soup.find_all("div", class_="g")
-                    
-                    # Extract titles and snippets
+
                     for i, div in enumerate(search_divs):
                         if i >= len(results):
                             break
-                        
-                        # Find title
+
                         title_elem = div.find("h3")
                         if title_elem:
                             results[i].title = title_elem.text.strip()
-                        
-                        # Find snippet
+
                         snippet_elem = div.find("div", class_="VwiC3b")
                         if snippet_elem:
                             results[i].snippet = snippet_elem.text.strip()
@@ -338,10 +331,10 @@ class UnifiedSearcher:
             List of search results
         """
         try:
-            # Create a session
+
             timeout = aiohttp.ClientTimeout(total=15)  # 15 second timeout
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                # Get the DuckDuckGo search page
+
                 url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
                 headers = {"User-Agent": self.user_agent}
                 
@@ -349,35 +342,29 @@ class UnifiedSearcher:
                     if response.status != 200:
                         logger.warning(f"DuckDuckGo search returned status code {response.status}")
                         raise ValueError(f"DuckDuckGo search returned status code {response.status}")
-                    
-                    # Parse the HTML
+
                     html = await response.text()
                     soup = BeautifulSoup(html, features="html.parser")
-                    
-                    # Find search results
+
                     results = []
                     for result in soup.find_all("div", class_="result"):
-                        # Find title
+
                         title_elem = result.find("a", class_="result__a")
                         if not title_elem:
                             continue
                         
                         title = title_elem.text.strip()
-                        
-                        # Find URL
+
                         url = title_elem.get("href", "")
                         if not url:
                             continue
-                        
-                        # Clean URL
+
                         if url.startswith("/"):
                             url = "https://duckduckgo.com" + url
-                        
-                        # Find snippet
+
                         snippet_elem = result.find("a", class_="result__snippet")
                         snippet = snippet_elem.text.strip() if snippet_elem else ""
-                        
-                        # Create a search result
+
                         result = SearchResult(
                             url=url,
                             title=title,
@@ -410,10 +397,10 @@ class UnifiedSearcher:
             List of search results
         """
         try:
-            # Create a session
+
             timeout = aiohttp.ClientTimeout(total=15)  # 15 second timeout
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                # Get the Bing search page
+
                 url = f"https://www.bing.com/search?q={quote_plus(query)}"
                 headers = {"User-Agent": self.user_agent}
                 
@@ -421,22 +408,19 @@ class UnifiedSearcher:
                     if response.status != 200:
                         logger.warning(f"Bing search returned status code {response.status}")
                         raise ValueError(f"Bing search returned status code {response.status}")
-                    
-                    # Parse the HTML
+
                     html = await response.text()
                     soup = BeautifulSoup(html, features="html.parser")
-                    
-                    # Find search results
+
                     results = []
                     for result in soup.find_all("li", class_="b_algo"):
-                        # Find title
+
                         title_elem = result.find("h2")
                         if not title_elem:
                             continue
                         
                         title = title_elem.text.strip()
-                        
-                        # Find URL
+
                         url_elem = title_elem.find("a")
                         if not url_elem:
                             continue
@@ -444,16 +428,14 @@ class UnifiedSearcher:
                         url = url_elem.get("href", "")
                         if not url:
                             continue
-                        
-                        # Find snippet
+
                         snippet_elem = result.find("div", class_="b_caption")
                         snippet = ""
                         if snippet_elem:
                             p_elem = snippet_elem.find("p")
                             if p_elem:
                                 snippet = p_elem.text.strip()
-                        
-                        # Create a search result
+
                         result = SearchResult(
                             url=url,
                             title=title,
@@ -486,10 +468,10 @@ class UnifiedSearcher:
             List of search results
         """
         try:
-            # Create a session
+
             timeout = aiohttp.ClientTimeout(total=15)  # 15 second timeout
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                # Get the Wikipedia search API
+
                 url = f"https://en.wikipedia.org/w/api.php?action=opensearch&search={quote_plus(query)}&limit={self.max_results}&namespace=0&format=json"
                 headers = {"User-Agent": self.user_agent}
                 
@@ -497,18 +479,15 @@ class UnifiedSearcher:
                     if response.status != 200:
                         logger.warning(f"Wikipedia search returned status code {response.status}")
                         raise ValueError(f"Wikipedia search returned status code {response.status}")
-                    
-                    # Parse the JSON
+
                     data = await response.json()
-                    
-                    # Extract results
+
                     results = []
                     for i in range(len(data[1])):
                         title = data[1][i]
                         snippet = data[2][i]
                         url = data[3][i]
-                        
-                        # Create a search result
+
                         result = SearchResult(
                             url=url,
                             title=title,
@@ -539,6 +518,41 @@ class UnifiedSearcher:
             List of search results
         """
         return asyncio.run(self.search(query, engines, force_refresh))
+    
+    async def _get_semaphore(self) -> asyncio.Semaphore:
+        """
+        Get or create a semaphore for the current event loop.
+        
+        This ensures that each thread has its own semaphore bound to the correct event loop.
+        """
+        try:
+
+            loop = asyncio.get_event_loop()
+            loop_id = id(loop)
+            
+            # If we already have a semaphore for this loop, return it
+            if loop_id in self._semaphores:
+                return self._semaphores[loop_id]
+            
+            # Otherwise, create a new one
+            async with self._semaphore_lock:
+                # Double-check if another task has created it while we were waiting
+                if loop_id in self._semaphores:
+                    return self._semaphores[loop_id]
+
+                semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent requests
+                self._semaphores[loop_id] = semaphore
+                return semaphore
+                
+        except RuntimeError:
+            # If we can't get the event loop, create a new one and a semaphore for it
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            semaphore = asyncio.Semaphore(5)
+            
+            loop_id = id(loop)
+            self._semaphores[loop_id] = semaphore
+            return semaphore
     
     @lru_cache(maxsize=128)
     def _get_formatted_query(self, query: str, engine: str) -> str:

@@ -33,7 +33,6 @@ from .scraper import WebScraper
 from .research.researcher import DeepResearcher
 from .agents.utils.agent_utils import is_shutdown_requested, get_shutdown_level
 
-# Initialize console
 console = Console()
 
 # Global flag for force exit
@@ -53,7 +52,7 @@ def sanitize_markup(text):
     Returns:
         Sanitized text safe for Rich console display
     """
-    # Convert to string if it's not already
+
     text_str = str(text)
     
     # Step 1: Remove empty brackets which can be interpreted as empty tags
@@ -184,7 +183,7 @@ def create_research_dashboard(state: AgentState) -> Layout:
 @click.group()
 def cli():
     """Shandu deep research system."""
-    # Set up the force exit handler
+
     setup_force_exit_handler()
     display_banner()
     pass
@@ -193,8 +192,7 @@ def cli():
 def configure():
     """Configure API settings."""
     console.print(Panel("Configure Shandu API Settings", style="bold blue"))
-    
-    # Get API settings
+
     api_base = click.prompt(
         "OpenAI API Base URL",
         default=config.get("api", "base_url")
@@ -361,35 +359,49 @@ def research(
     except KeyboardInterrupt:
         console.print("\n[yellow]Query clarification cancelled. Using original query.[/]")
         refined_query = query
-    
-    # Create research graph
+
     if strategy == "langgraph":
         graph = ResearchGraph(llm=llm, searcher=searcher, scraper=scraper)
-        
-        # Create progress display
+
         with Live(console=console, auto_refresh=True, screen=False, transient=False) as live:
-            try:
-                def update_display(state):
+            console.print("[bold green]Starting research...[/]")
+            console.print("[bold blue]This will show detailed information about the search process and pages being analyzed.[/]")
+            console.print("[dim]The research process may take some time depending on depth and breadth settings.[/]")
+            console.print("[dim]You'll see search queries, selected URLs, and content analysis in real-time.[/]")
+            
+            # Track the last displayed state hash to avoid duplicate updates
+            last_state_hash = None
+            
+            def debounced_update_display(state):
+                nonlocal last_state_hash
+
+                # Only consider elements that should trigger a UI refresh
+                status = state.get("status", "")
+                current_depth = state.get("current_depth", 0)
+                sources_count = len(state.get("sources", []))
+                subqueries_count = len(state.get("subqueries", []))
+
+                current_hash = f"{status}_{current_depth}_{sources_count}_{subqueries_count}"
+                
+                # Only update if there's a meaningful change to display
+                if current_hash != last_state_hash:
+                    last_state_hash = current_hash
+                    
                     if verbose:
                         dashboard = create_research_dashboard(state)
                         live.update(dashboard)
                     else:
                         tree = display_research_progress(state)
                         live.update(tree)
-                
-                console.print("[bold green]Starting research...[/]")
-                console.print("[bold blue]This will show detailed information about the search process and pages being analyzed.[/]")
-                console.print("[dim]The research process may take some time depending on depth and breadth settings.[/]")
-                console.print("[dim]You'll see search queries, selected URLs, and content analysis in real-time.[/]")
-                
+            
+            try:
                 result = graph.research_sync(
                     refined_query,
                     depth=depth,
                     breadth=breadth,
-                    progress_callback=update_display,
+                    progress_callback=debounced_update_display,
                     include_objective=include_objective
                 )
-                
             except KeyboardInterrupt:
                 console.print("\n[yellow]Research interrupted by user.[/]")
                 sys.exit(0)
@@ -532,8 +544,7 @@ def search(query: str, engines: Optional[str], max_results: int):
             sys.exit(1)
     
     console.print(f"\n[bold green]Found {len(results)} results:[/]")
-    
-    # Create table
+
     table = Table(title=f"Search Results for '{query}'")
     table.add_column("Source", style="cyan")
     table.add_column("Title", style="green")
