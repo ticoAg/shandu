@@ -14,7 +14,7 @@ with open("requirements.txt") as f:
 
 setup(
     name="shandu",
-    version="1.5.2",
+    version="1.5.2",  # Updated for performance and reliability improvements
     description="Deep research system with LangChain and LangGraph",
     long_description=long_description,
     long_description_content_type="text/markdown",

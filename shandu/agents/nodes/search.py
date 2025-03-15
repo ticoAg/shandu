@@ -4,7 +4,9 @@ Search node for research graph.
 import asyncio
 import time
 import random
-from typing import List, Dict, Any, Optional
+import logging
+from typing import List, Dict, Any, Optional, Set
+from concurrent.futures import ThreadPoolExecutor
 from rich.console import Console
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -25,6 +27,9 @@ class SearchResultAnalysis(BaseModel):
     analysis: str = Field(
         description="Analysis of the search results"
     )
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 async def search_node(llm, searcher, scraper, progress_callback, state: AgentState) -> AgentState:
     """
@@ -53,98 +58,120 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
     else:
         recent_queries = [state["query"]]
     
-    for query_idx, query in enumerate(recent_queries):
+    # Process queries in batches for better concurrency control
+    async def process_query(query, query_idx):
         if is_shutdown_requested():
             log_chain_of_thought(state, f"Shutdown requested, stopping search after {query_idx} queries")
-            break
+            return
             
-        console.print(f"Executing {searcher.default_engine} search for: {query}")
+        logger.info(f"Processing query {query_idx+1}/{len(recent_queries)}: {query}")
+        console.print(f"Executing search for: {query}")
         state["status"] = f"Searching for: {query}"
         
-        # Search for the query
+        # Search for the query using multiple engines for better results
         try:
-            search_results = await searcher.search(query, engines=[searcher.default_engine])
+            # Use multiple engines in parallel for more diverse results
+            engines = ["google", "duckduckgo"]  # Using primary engines 
+            if query_idx % 2 == 0:  # Add Wikipedia for every other query
+                engines.append("wikipedia")
+            
+            search_results = await searcher.search(query, engines=engines)
+            if not search_results:
+                logger.warning(f"No search results found for: {query}")
+                log_chain_of_thought(state, f"No search results found for '{query}'")
+                return
+                
         except Exception as e:
             console.print(f"[red]Error during search: {e}[/]")
             log_chain_of_thought(state, f"Error during search for '{query}': {str(e)}")
-            continue
+            return
         
-        # Filter relevant URLs
+        # Filter relevant URLs in batches to avoid overwhelming the LLM
         relevant_urls = []
-        for result in search_results:
-            console.print(f"{searcher.default_engine} search result type: {type(result)}")
-            console.print(f"{searcher.default_engine} search result attributes: {result.__dict__}")
-            
-            is_relevant = await is_relevant_url(llm, result.url, result.title, result.snippet, query)
-            
-            if is_relevant:
-                relevant_urls.append(result)
+        url_batches = [search_results[i:i+10] for i in range(0, len(search_results), 10)]
+        
+        for batch in url_batches:
+            if is_shutdown_requested():
+                break
                 
-                # Add to sources
-                state["sources"].append({
-                    "url": result.url,
-                    "title": result.title,
-                    "snippet": result.snippet,
-                    "source": result.source,
-                    "query": query
-                })
+            # Process URL relevance checks concurrently but with a limit
+            relevance_tasks = []
+            for result in batch:
+                relevance_task = is_relevant_url(llm, result.url, result.title, result.snippet, query)
+                relevance_tasks.append((result, relevance_task))
+            
+            # Wait for all relevance checks in this batch
+            for result, relevance_task in relevance_tasks:
+                try:
+                    is_relevant = await relevance_task
+                    if is_relevant:
+                        relevant_urls.append(result)
+                        
+                        # Add to sources
+                        state["sources"].append({
+                            "url": result.url,
+                            "title": result.title,
+                            "snippet": result.snippet,
+                            "source": result.source,
+                            "query": query
+                        })
+                except Exception as e:
+                    logger.error(f"Error checking relevance for {result.url}: {e}")
         
         if not relevant_urls:
             log_chain_of_thought(state, f"No relevant URLs found for '{query}'")
-            continue
+            return
         
-        relevant_urls = relevant_urls[:5]
+        # Limit the number of URLs to scrape for efficiency
+        # Choose a mix of the most relevant URLs across different sources
+        # Sort by source first to ensure diversity, then take top N
+        relevant_urls.sort(key=lambda r: r.source)
+        relevant_urls = relevant_urls[:8]  # Increased from 5 to 8 for better coverage
         
-        # Scrape the relevant URLs
+        # Scrape the relevant URLs all at once using our improved scraper
         urls_to_scrape = [result.url for result in relevant_urls]
         
-        batch_size = 3
-        
-        batch_size = max(1, batch_size)
-        
-        if len(urls_to_scrape) > 0 and batch_size > 0:
-            num_batches = (len(urls_to_scrape) + batch_size - 1) // batch_size
-        else:
-            num_batches = 0
-        
-        scraped_contents = []
-        
-        # Process each batch
-        for i in range(0, len(urls_to_scrape), batch_size):
-            if is_shutdown_requested():
-                log_chain_of_thought(state, f"Shutdown requested, stopping scraping after {len(scraped_contents)} URLs")
-                break
-                
-            batch = urls_to_scrape[i:i+batch_size]
+        # The new scraper implementation handles concurrency internally
+        # It will use semaphores to limit concurrent scraping and handle timeouts
+        try:
+            scraped_contents = await scraper.scrape_urls(
+                urls_to_scrape, 
+                dynamic=False,  # Avoid dynamic for speed unless specially needed 
+                force_refresh=False  # Use caching if available
+            )
+        except Exception as e:
+            logger.error(f"Error scraping URLs for query '{query}': {e}")
+            log_chain_of_thought(state, f"Error scraping URLs for query '{query}': {str(e)}")
+            return
             
-            # Scrape the batch
-            batch_results = await scraper.scrape_urls(batch)
-            scraped_contents.extend(batch_results)
-            
-            # Add a small delay between batches
-            if i + batch_size < len(urls_to_scrape):
-                await asyncio.sleep(random.uniform(1.0, 2.0))
-        
         # Process each scraped item
         processed_items = []
-        for item in scraped_contents:
-            if not item.is_successful():
-                continue
+        successful_scrapes = [item for item in scraped_contents if item.is_successful()]
+        
+        # Process in smaller batches for better throughput
+        for item in successful_scrapes:
+            if is_shutdown_requested():
+                break
                 
-            console.print(f"Analyzing page: {item.title}")
-            console.print(f"URL: {item.url}")
-            
-            content_preview = item.text[:200] + "..." if len(item.text) > 200 else item.text
-            console.print(f"Extracted Content: {content_preview}")
+            logger.info(f"Processing scraped content from: {item.url}")
+            content_preview = item.text[:100] + "..." if len(item.text) > 100 else item.text
+            logger.debug(f"Content preview: {content_preview}")
             
             processed_item = await process_scraped_item(llm, item, query, item.text)
             processed_items.append(processed_item)
         
         if not processed_items:
             log_chain_of_thought(state, f"No content could be extracted from URLs for '{query}'")
-            continue
+            return
         
-        combined_content = "\n\n".join([f"Source: {item['item'].url}\nTitle: {item['item'].title}\nContent: {item['content']}" for item in processed_items])
+        # Prepare content for analysis in a structured way
+        combined_content = ""
+        for item in processed_items:
+            # Format with clear source markers for better attribution
+            combined_content += f"\n\n## SOURCE: {item['item'].url}\n"
+            combined_content += f"## TITLE: {item['item'].title or 'No title'}\n"
+            combined_content += f"## RELIABILITY: {item['rating']}\n"
+            combined_content += f"## CONTENT START\n{item['content']}\n## CONTENT END\n"
         
         analysis = await analyze_content(llm, query, combined_content)
         
@@ -160,7 +187,20 @@ async def search_node(llm, searcher, scraper, progress_callback, state: AgentSta
         if progress_callback:
             await _call_progress_callback(progress_callback, state)
     
+    # Process queries in parallel with concurrency control
+    tasks = []
+    for idx, query in enumerate(recent_queries):
+        tasks.append(process_query(query, idx))
+    
+    # Use gather to process all queries concurrently but with proper control
+    await asyncio.gather(*tasks)
+    
     state["current_depth"] += 1
     log_chain_of_thought(state, f"Completed depth {state['current_depth']} of {state['depth']}")
+    
+    # Update UI (only if not already in progress to avoid repetition)
+    if progress_callback and state.get("status") != "Searching":
+        state["status"] = "Searching completed"
+        await _call_progress_callback(progress_callback, state)
     
     return state

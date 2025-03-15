@@ -8,7 +8,7 @@ import os
 
 @dataclass
 class ResearchResult:
-    """Container for research results."""
+    """Container for research results with enhanced citation tracking."""
     query: str
     summary: str
     sources: List[Dict[str, Any]]
@@ -17,14 +17,20 @@ class ResearchResult:
     content_analysis: Optional[List[Dict[str, Any]]] = None
     chain_of_thought: Optional[List[str]] = None
     research_stats: Optional[Dict[str, Any]] = None
+    citation_stats: Optional[Dict[str, Any]] = None  # New field for tracking citation statistics
     timestamp: datetime = field(default_factory=datetime.now)
 
     def to_markdown(self, include_chain_of_thought: bool = False, include_objective: bool = False) -> str:
-        """Convert research results to markdown format."""
+        """Convert research results to markdown format including citation statistics."""
         stats = self.research_stats or {}
         elapsed_time = stats.get("elapsed_time_formatted", "Unknown")
         sources_count = stats.get("sources_count", len(self.sources))
         subqueries_count = stats.get("subqueries_count", len(self.subqueries))
+        
+        # Get citation statistics if available
+        citation_stats = self.citation_stats or {}
+        total_sources = citation_stats.get("total_sources", sources_count)
+        total_learnings = citation_stats.get("total_learnings", 0)
     
         # Process the summary to remove formatting issues
         summary = self.summary
@@ -90,7 +96,21 @@ class ResearchResult:
         md.append(f"- **Breadth**: {stats.get('breadth', 'Not specified')}")
         md.append(f"- **Time Taken**: {elapsed_time}")
         md.append(f"- **Subqueries Explored**: {subqueries_count}")
-        md.append(f"- **Sources Analyzed**: {sources_count}\n")
+        md.append(f"- **Sources Analyzed**: {sources_count}")
+        
+        # Add citation statistics if available
+        if total_learnings > 0:
+            md.append(f"- **Total Learnings Extracted**: {total_learnings}")
+            md.append(f"- **Source Coverage**: {total_sources} sources with {total_learnings} tracked information points")
+            
+            # Add reliability information if available
+            source_reliability = citation_stats.get("source_reliability", {})
+            if source_reliability:
+                md.append(f"- **Source Quality**: {len(source_reliability)} domains assessed for reliability\n")
+            else:
+                md.append("")
+        else:
+            md.append("")
         
         # Add chain of thought if requested
         if include_chain_of_thought and self.chain_of_thought:
@@ -123,7 +143,7 @@ class ResearchResult:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format."""
-        return {
+        result = {
             "query": self.query,
             "summary": self.summary,
             "sources": self.sources,
@@ -134,6 +154,12 @@ class ResearchResult:
             "research_stats": self.research_stats,
             "timestamp": self.timestamp.isoformat()
         }
+        
+        # Add citation stats if available
+        if self.citation_stats:
+            result["citation_stats"] = self.citation_stats
+            
+        return result
     
     def save_to_file(self, filepath: str, include_chain_of_thought: bool = False, include_objective: bool = False) -> None:
         """Save research results to a file."""

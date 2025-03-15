@@ -6,7 +6,8 @@ import os
 import re
 import asyncio
 import time
-from typing import List, Dict, Any, Optional, Union
+import random
+from typing import List, Dict, Any, Optional, Union, Set
 from dataclasses import dataclass
 import logging
 from urllib.parse import urlparse
@@ -16,6 +17,7 @@ from fake_useragent import UserAgent
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import WebBaseLoader
 from pydantic import BaseModel, Field
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -23,6 +25,73 @@ logger = logging.getLogger(__name__)
 
 # Try to get USER_AGENT from environment, otherwise use a generic one
 USER_AGENT = os.environ.get('USER_AGENT', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36')
+
+# Cache settings
+CACHE_ENABLED = True
+CACHE_DIR = os.path.expanduser("~/.shandu/cache/scraper")
+CACHE_TTL = 86400  # 24 hours in seconds
+
+# Create cache directory if it doesn't exist
+if CACHE_ENABLED and not os.path.exists(CACHE_DIR):
+    try:
+        os.makedirs(CACHE_DIR, exist_ok=True)
+    except Exception as e:
+        logger.warning(f"Could not create cache directory: {e}")
+        CACHE_ENABLED = False
+
+# Domain reliability tracking
+class DomainReliability:
+    """Track reliability metrics for domains to optimize scraping."""
+    def __init__(self):
+        self.domain_metrics: Dict[str, Dict[str, Any]] = {}
+        self.DEFAULT_TIMEOUT = 10.0
+        
+    def get_timeout(self, url: str) -> float:
+        """Get appropriate timeout for a domain based on past performance."""
+        domain = urlparse(url).netloc
+        if domain in self.domain_metrics:
+            # Use domain-specific timeout if available
+            return self.domain_metrics[domain].get("timeout", self.DEFAULT_TIMEOUT)
+        return self.DEFAULT_TIMEOUT
+        
+    def update_metrics(self, url: str, success: bool, response_time: float, status_code: Optional[int] = None) -> None:
+        """Update metrics for a domain based on scraping results."""
+        domain = urlparse(url).netloc
+        if domain not in self.domain_metrics:
+            self.domain_metrics[domain] = {
+                "success_count": 0,
+                "fail_count": 0,
+                "avg_response_time": 0,
+                "timeout": self.DEFAULT_TIMEOUT,
+                "status_codes": {}
+            }
+            
+        metrics = self.domain_metrics[domain]
+        
+        # Update success/failure counts
+        if success:
+            metrics["success_count"] += 1
+        else:
+            metrics["fail_count"] += 1
+            
+        # Update average response time
+        if response_time > 0:
+            total_requests = metrics["success_count"] + metrics["fail_count"]
+            metrics["avg_response_time"] = (
+                (metrics["avg_response_time"] * (total_requests - 1) + response_time) / total_requests
+            )
+            
+        # Update status code tracking
+        if status_code:
+            metrics["status_codes"][str(status_code)] = metrics["status_codes"].get(str(status_code), 0) + 1
+            
+        # Adjust timeout based on response times
+        if metrics["success_count"] >= 3:
+            # Set timeout to 1.5x the average response time, with min and max bounds
+            metrics["timeout"] = min(30.0, max(5.0, metrics["avg_response_time"] * 1.5))
+
+# Global domain reliability tracker
+domain_reliability = DomainReliability()
 
 @dataclass
 class ScrapedContent:
@@ -34,25 +103,41 @@ class ScrapedContent:
     content_type: str
     metadata: Dict[str, Any]
     error: Optional[str] = None
+    scrape_time: float = 0.0
     
     def is_successful(self) -> bool:
         """Check if scraping was successful."""
         return self.error is None and len(self.text) > 0
+    
+    def get_cache_key(self) -> str:
+        """Generate a cache key for this content."""
+        domain = urlparse(self.url).netloc
+        path = urlparse(self.url).path
+        return f"{domain}{path}".replace("/", "_").replace(".", "_")
 
 class WebScraper:
     """Web scraper for extracting content from web pages using WebBaseLoader."""
     
-    def __init__(self, proxy: Optional[str] = None, timeout: int = 10):
+    def __init__(self, proxy: Optional[str] = None, timeout: int = 10, max_concurrent: int = 5,
+                 cache_enabled: bool = CACHE_ENABLED, cache_ttl: int = CACHE_TTL):
         """
         Initialize the web scraper.
         
         Args:
             proxy: Optional proxy URL to use for requests
-            timeout: Timeout for requests in seconds
+            timeout: Default timeout for requests in seconds
+            max_concurrent: Maximum number of concurrent scraping operations
+            cache_enabled: Whether to use caching for scraped content
+            cache_ttl: Time-to-live for cached content in seconds
         """
         self.proxy = proxy
         self.timeout = timeout
+        self.max_concurrent = max(1, min(max_concurrent, 10))  # Clamp between 1 and 10
         self.user_agent = USER_AGENT
+        self.cache_enabled = cache_enabled
+        self.cache_ttl = cache_ttl
+        self.in_progress_urls: Set[str] = set()  # Track URLs being scraped to prevent duplicates
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)  # Control concurrency
         
         # Try to use fake_useragent if available
         try:
@@ -61,17 +146,86 @@ class WebScraper:
         except Exception as e:
             logger.warning(f"Could not generate random user agent: {e}. Using default.")
     
-    async def scrape_url(self, url: str, dynamic: bool = False) -> ScrapedContent:
+    async def _check_cache(self, url: str) -> Optional[ScrapedContent]:
+        """Check if content is available in cache and not expired."""
+        if not self.cache_enabled:
+            return None
+            
+        domain = urlparse(url).netloc
+        path = urlparse(url).path
+        cache_key = f"{domain}{path}".replace("/", "_").replace(".", "_")
+        cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
+        
+        if not os.path.exists(cache_path):
+            return None
+            
+        try:
+            # Check if cache is expired
+            if time.time() - os.path.getmtime(cache_path) > self.cache_ttl:
+                return None
+                
+            # Load cached content
+            import json
+            with open(cache_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                
+            # Convert to ScrapedContent object
+            return ScrapedContent(
+                url=data["url"],
+                title=data["title"],
+                text=data["text"],
+                html=data["html"],
+                content_type=data["content_type"],
+                metadata=data["metadata"],
+                error=data.get("error"),
+                scrape_time=data.get("scrape_time", 0.0)
+            )
+        except Exception as e:
+            logger.warning(f"Error loading cache for {url}: {e}")
+            return None
+    
+    async def _save_to_cache(self, content: ScrapedContent) -> bool:
+        """Save scraped content to cache."""
+        if not self.cache_enabled or not content.is_successful():
+            return False
+            
+        cache_key = content.get_cache_key()
+        cache_path = os.path.join(CACHE_DIR, f"{cache_key}.json")
+        
+        try:
+            # Create a serializable representation
+            import json
+            data = {
+                "url": content.url,
+                "title": content.title,
+                "text": content.text,
+                "html": content.html[:50000],  # Limit HTML size to avoid huge cache files
+                "content_type": content.content_type,
+                "metadata": content.metadata,
+                "error": content.error,
+                "scrape_time": content.scrape_time or time.time()
+            }
+            
+            with open(cache_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=None)
+            return True
+        except Exception as e:
+            logger.warning(f"Error saving cache for {content.url}: {e}")
+            return False
+    
+    async def scrape_url(self, url: str, dynamic: bool = False, force_refresh: bool = False) -> ScrapedContent:
         """
-        Scrape content from a URL using WebBaseLoader.
+        Scrape content from a URL using WebBaseLoader with smart timeouts and caching.
         
         Args:
             url: URL to scrape
             dynamic: Whether to use dynamic rendering (for JavaScript-heavy sites)
+            force_refresh: Whether to ignore cache and force a fresh scrape
             
         Returns:
             ScrapedContent object with the scraped content
         """
+        start_time = time.time()
         logger.info(f"Scraping URL: {url}")
         
         # Check if URL is valid
@@ -83,14 +237,42 @@ class WebScraper:
                 html="",
                 content_type="",
                 metadata={},
-                error="Invalid URL format"
+                error="Invalid URL format",
+                scrape_time=start_time
             )
         
+        # Check if already being processed (to avoid race conditions)
+        if url in self.in_progress_urls:
+            return ScrapedContent(
+                url=url,
+                title="",
+                text="",
+                html="",
+                content_type="",
+                metadata={},
+                error="URL is already being processed",
+                scrape_time=start_time
+            )
+            
+        # Mark as in progress
+        self.in_progress_urls.add(url)
+        
         try:
+            # Check cache first if not forcing refresh
+            if not force_refresh:
+                cached_content = await self._check_cache(url)
+                if cached_content:
+                    logger.info(f"Using cached content for {url}")
+                    self.in_progress_urls.remove(url)
+                    return cached_content
+            
+            # Get adaptive timeout for this domain
+            adaptive_timeout = domain_reliability.get_timeout(url)
+            
             # Configure WebBaseLoader with appropriate settings
             requests_kwargs = {
                 "headers": {"User-Agent": self.user_agent},
-                "timeout": self.timeout,
+                "timeout": adaptive_timeout,
                 "verify": True  # SSL verification
             }
             
@@ -100,134 +282,229 @@ class WebScraper:
                     "https": self.proxy
                 }
             
-            # Use WebBaseLoader for scraping
-            loader = WebBaseLoader(
-                web_path=url,
-                requests_kwargs=requests_kwargs,
-                # Remove the features parameter from bs_kwargs to avoid duplicate argument error
-                bs_kwargs={},  # BeautifulSoup already gets features parameter internally
-                raise_for_status=True,
-                continue_on_failure=False,
-                autoset_encoding=True,
-                trust_env=True
-            )
-            
-            # If dynamic rendering is requested, use Playwright
-            if dynamic:
+            # Acquire semaphore to limit concurrency
+            async with self.semaphore:
+                # If dynamic rendering is requested, use Playwright
+                if dynamic:
+                    try:
+                        from playwright.async_api import async_playwright
+                        
+                        async with async_playwright() as p:
+                            browser = await p.chromium.launch(headless=True)
+                            page = await browser.new_page(user_agent=self.user_agent)
+                            
+                            # Set timeout for navigation
+                            page.set_default_timeout(adaptive_timeout * 1000)
+                            
+                            # Navigate to the URL with timeout handling
+                            try:
+                                await asyncio.wait_for(
+                                    page.goto(url, wait_until="networkidle"),
+                                    timeout=adaptive_timeout
+                                )
+                                
+                                # Get the page content
+                                html_content = await page.content()
+                                
+                                # Get the page title
+                                title = await page.title()
+                                
+                                # Close the browser
+                                await browser.close()
+                                
+                                # Parse the HTML with BeautifulSoup
+                                soup = BeautifulSoup(html_content, "lxml")
+                                
+                                # Extract metadata
+                                metadata = self._extract_metadata(soup, url)
+                                
+                                # Extract main content
+                                main_content = self._extract_main_content(soup)
+                                
+                                end_time = time.time()
+                                scrape_time = end_time - start_time
+                                
+                                # Update domain reliability metrics
+                                domain_reliability.update_metrics(
+                                    url=url, 
+                                    success=True, 
+                                    response_time=scrape_time, 
+                                    status_code=200
+                                )
+                                
+                                result = ScrapedContent(
+                                    url=url,
+                                    title=title,
+                                    text=main_content,
+                                    html=html_content,
+                                    content_type="text/html",
+                                    metadata=metadata,
+                                    scrape_time=scrape_time
+                                )
+                                
+                                # Cache the successful result
+                                await self._save_to_cache(result)
+                                
+                                # Remove from in-progress set
+                                self.in_progress_urls.remove(url)
+                                
+                                return result
+                                
+                            except asyncio.TimeoutError:
+                                await browser.close()
+                                logger.warning(f"Playwright timeout for {url}")
+                                # Update domain reliability metrics for timeout
+                                domain_reliability.update_metrics(
+                                    url=url, 
+                                    success=False, 
+                                    response_time=adaptive_timeout
+                                )
+                                # Fall back to WebBaseLoader
+                                
+                    except ImportError:
+                        logger.warning("Playwright not installed. Falling back to WebBaseLoader.")
+                    except Exception as e:
+                        logger.error(f"Error during dynamic rendering: {e}. Falling back to WebBaseLoader.")
+                        # Update domain reliability metrics
+                        domain_reliability.update_metrics(
+                            url=url, 
+                            success=False, 
+                            response_time=time.time() - start_time
+                        )
+                
+                # Use WebBaseLoader for scraping
+                loader = WebBaseLoader(
+                    web_path=url,
+                    requests_kwargs=requests_kwargs,
+                    bs_kwargs={},  # BeautifulSoup already gets features parameter internally
+                    raise_for_status=True,
+                    continue_on_failure=False,
+                    autoset_encoding=True,
+                    trust_env=True
+                )
+                
                 try:
-                    from playwright.async_api import async_playwright
+                    # Load the document using WebBaseLoader
+                    documents = await asyncio.to_thread(loader.load)
                     
-                    async with async_playwright() as p:
-                        browser = await p.chromium.launch(headless=True)
-                        page = await browser.new_page(user_agent=self.user_agent)
+                    if not documents:
+                        end_time = time.time()
+                        scrape_time = end_time - start_time
                         
-                        # Set timeout for navigation
-                        page.set_default_timeout(self.timeout * 1000)
+                        # Update domain reliability metrics
+                        domain_reliability.update_metrics(
+                            url=url, 
+                            success=False, 
+                            response_time=scrape_time
+                        )
                         
-                        # Navigate to the URL
-                        await page.goto(url, wait_until="networkidle")
-                        
-                        # Get the page content
-                        html_content = await page.content()
-                        
-                        # Get the page title
-                        title = await page.title()
-                        
-                        # Close the browser
-                        await browser.close()
-                        
-                        # Parse the HTML with BeautifulSoup
-                        soup = BeautifulSoup(html_content, "lxml")
-                        
-                        # Extract metadata
-                        metadata = self._extract_metadata(soup, url)
-                        
-                        # Extract main content
-                        main_content = self._extract_main_content(soup)
-                        
+                        self.in_progress_urls.remove(url)
                         return ScrapedContent(
                             url=url,
-                            title=title,
-                            text=main_content,
-                            html=html_content,
-                            content_type="text/html",
-                            metadata=metadata
+                            title="",
+                            text="",
+                            html="",
+                            content_type="",
+                            metadata={},
+                            error="No content found",
+                            scrape_time=scrape_time
                         )
-                except ImportError:
-                    logger.warning("Playwright not installed. Falling back to WebBaseLoader.")
-                except Exception as e:
-                    logger.error(f"Error during dynamic rendering: {e}. Falling back to WebBaseLoader.")
-            
-            # Load the document using WebBaseLoader
-            documents = await asyncio.to_thread(loader.load)
-            
-            if not documents:
-                return ScrapedContent(
-                    url=url,
-                    title="",
-                    text="",
-                    html="",
-                    content_type="",
-                    metadata={},
-                    error="No content found"
-                )
-            
-            # Get the first document (there should only be one for a single URL)
-            document = documents[0]
-            
-            # Extract metadata from the document
-            metadata = document.metadata
-            
-            # Get the page content
-            text_content = document.page_content
-            
-            # Split long content for better processing
-            if len(text_content) > 10000:
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=10000,
-                    chunk_overlap=200,
-                    length_function=len,
-                )
-                chunks = text_splitter.split_text(text_content)
-                text_content = "\n\n".join(chunks[:3])  # Use first 3 chunks
-            
-            # Clean up excessive whitespace
-            text_content = re.sub(r'\n{3,}', '\n\n', text_content)
-            text_content = re.sub(r'\s{2,}', ' ', text_content)
-            
-            # Remove problematic patterns that could conflict with Rich markup
-            # This prevents issues when this text is displayed in the console
-            text_content = re.sub(r'\[\]', ' ', text_content)  # Empty brackets
-            text_content = re.sub(r'\[\/?[^\]]*\]?', ' ', text_content)  # Incomplete/malformed tags
-            text_content = re.sub(r'\[[^\]]*\]', ' ', text_content)  # Any bracketed content
+                    
+                    # Get the first document (there should only be one for a single URL)
+                    document = documents[0]
+                    
+                    # Extract metadata from the document
+                    metadata = document.metadata
+                    
+                    # Get the page content
+                    text_content = document.page_content
+                    
+                    # Process content more efficiently
+                    # Only split if very long to reduce processing overhead
+                    if len(text_content) > 20000:
+                        text_splitter = RecursiveCharacterTextSplitter(
+                            chunk_size=10000,
+                            chunk_overlap=200,
+                            length_function=len,
+                        )
+                        chunks = text_splitter.split_text(text_content)
+                        text_content = "\n\n".join(chunks[:5])  # Use first 5 chunks for more comprehensive coverage
+                    
+                    # Clean up excessive whitespace
+                    text_content = re.sub(r'\n{3,}', '\n\n', text_content)
+                    text_content = re.sub(r'\s{2,}', ' ', text_content)
+                    
+                    # Remove problematic patterns that could conflict with Rich markup
+                    # This prevents issues when this text is displayed in the console
+                    text_content = re.sub(r'\[\]', ' ', text_content)  # Empty brackets
+                    text_content = re.sub(r'\[\/?[^\]]*\]?', ' ', text_content)  # Incomplete/malformed tags
+                    text_content = re.sub(r'\[[^\]]*\]', ' ', text_content)  # Any bracketed content
 
-            # Get HTML content if available
-            html_content = ""
-            if hasattr(loader, "_html_content") and loader._html_content:
-                html_content = loader._html_content
-            
-            # Get title from metadata or extract from HTML
-            title = metadata.get("title", "")
-            if not title and html_content:
-                soup = BeautifulSoup(html_content, "lxml")
-                title_tag = soup.find("title")
-                if title_tag:
-                    title = title_tag.text.strip()
-            
-            # Get content type
-            content_type = metadata.get("content-type", "text/html")
-            
-            return ScrapedContent(
-                url=url,
-                title=title,
-                text=text_content,
-                html=html_content,
-                content_type=content_type,
-                metadata=metadata
-            )
+                    # Get HTML content if available
+                    html_content = ""
+                    if hasattr(loader, "_html_content") and loader._html_content:
+                        html_content = loader._html_content
+                    
+                    # Get title from metadata or extract from HTML
+                    title = metadata.get("title", "")
+                    if not title and html_content:
+                        soup = BeautifulSoup(html_content, "lxml")
+                        title_tag = soup.find("title")
+                        if title_tag:
+                            title = title_tag.text.strip()
+                    
+                    # Get content type
+                    content_type = metadata.get("content-type", "text/html")
+                    
+                    end_time = time.time()
+                    scrape_time = end_time - start_time
+                    
+                    # Update domain reliability metrics
+                    domain_reliability.update_metrics(
+                        url=url, 
+                        success=True, 
+                        response_time=scrape_time,
+                        status_code=metadata.get("status_code")
+                    )
+                    
+                    result = ScrapedContent(
+                        url=url,
+                        title=title,
+                        text=text_content,
+                        html=html_content,
+                        content_type=content_type,
+                        metadata=metadata,
+                        scrape_time=scrape_time
+                    )
+                    
+                    # Cache the successful result
+                    await self._save_to_cache(result)
+                    
+                    # Remove from in-progress set
+                    self.in_progress_urls.remove(url)
+                    
+                    return result
+                    
+                except Exception as e:
+                    logger.error(f"Error using WebBaseLoader: {e}")
+                    raise  # Re-raise to be caught by outer try/except
             
         except Exception as e:
+            end_time = time.time()
+            scrape_time = end_time - start_time
+            
             logger.error(f"Error scraping URL {url}: {str(e)}")
+            
+            # Update domain reliability metrics
+            domain_reliability.update_metrics(
+                url=url, 
+                success=False, 
+                response_time=scrape_time
+            )
+            
+            # Remove from in-progress set
+            self.in_progress_urls.remove(url)
+            
             return ScrapedContent(
                 url=url,
                 title="",
@@ -235,7 +512,8 @@ class WebScraper:
                 html="",
                 content_type="",
                 metadata={},
-                error=str(e)
+                error=str(e),
+                scrape_time=scrape_time
             )
     
     def _extract_metadata(self, soup: BeautifulSoup, url: str) -> Dict[str, str]:
@@ -307,19 +585,97 @@ class WebScraper:
         
         return content.strip()
     
-    async def scrape_urls(self, urls: List[str], dynamic: bool = False) -> List[ScrapedContent]:
+    async def scrape_urls(self, urls: List[str], dynamic: bool = False, force_refresh: bool = False) -> List[ScrapedContent]:
         """
-        Scrape multiple URLs concurrently.
+        Scrape multiple URLs concurrently with improved parallelism and error handling.
         
         Args:
             urls: List of URLs to scrape
             dynamic: Whether to use dynamic rendering
+            force_refresh: Whether to ignore cache and force fresh scrapes
             
         Returns:
             List of ScrapedContent objects
         """
-        tasks = [self.scrape_url(url, dynamic) for url in urls]
-        return await asyncio.gather(*tasks)
+        if not urls:
+            return []
+            
+        # Filter out duplicates while preserving order
+        unique_urls = []
+        seen = set()
+        for url in urls:
+            if url not in seen:
+                unique_urls.append(url)
+                seen.add(url)
+                
+        # Use asyncio.gather with concurrency control via the semaphore
+        # The semaphore is handled inside scrape_url, so we don't need to apply it here
+        tasks = [self.scrape_url(url, dynamic, force_refresh) for url in unique_urls]
+        
+        try:
+            # Use as_completed pattern for better handling of individual timeouts
+            results = []
+            for task in asyncio.as_completed(tasks, timeout=60):  # Overall timeout
+                try:
+                    result = await task
+                    results.append(result)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Task timeout during batch scraping")
+                except Exception as e:
+                    logger.error(f"Error in scraping task: {e}")
+                    
+            # Sort results back to match input order
+            result_map = {r.url: r for r in results if hasattr(r, 'url')}
+            ordered_results = [result_map.get(url, None) for url in unique_urls]
+            
+            # Replace None values with error objects
+            for i, result in enumerate(ordered_results):
+                if result is None:
+                    ordered_results[i] = ScrapedContent(
+                        url=unique_urls[i],
+                        title="",
+                        text="",
+                        html="",
+                        content_type="",
+                        metadata={},
+                        error="Failed to complete scraping",
+                        scrape_time=time.time()
+                    )
+            
+            return ordered_results
+            
+        except asyncio.TimeoutError:
+            logger.error("Overall timeout exceeded during batch scraping")
+            # Return partial results for those that completed
+            completed_results = [task.result() if task.done() and not task.exception() else None for task in tasks]
+            
+            # Replace None values with error objects
+            for i, result in enumerate(completed_results):
+                if result is None:
+                    completed_results[i] = ScrapedContent(
+                        url=unique_urls[i] if i < len(unique_urls) else "unknown",
+                        title="",
+                        text="",
+                        html="",
+                        content_type="",
+                        metadata={},
+                        error="Timeout during batch scraping",
+                        scrape_time=time.time()
+                    )
+            
+            return completed_results
+        except Exception as e:
+            logger.error(f"Unexpected error during batch scraping: {e}")
+            return [ScrapedContent(
+                url=url,
+                title="",
+                text="",
+                html="",
+                content_type="",
+                metadata={},
+                error=f"Batch scraping error: {str(e)}",
+                scrape_time=time.time()
+            ) for url in unique_urls]
 
 # Structured output models for scraping
 class ScrapingResult(BaseModel):

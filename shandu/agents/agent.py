@@ -19,9 +19,10 @@ from ..search.search import UnifiedSearcher, SearchResult
 from ..research.researcher import ResearchResult
 from ..scraper import WebScraper, ScrapedContent
 from ..prompts import SYSTEM_PROMPTS, USER_PROMPTS
+from .utils.citation_manager import CitationManager, SourceInfo, Learning
 
 class ResearchAgent:
-    """LangChain-based research agent."""
+    """LangChain-based research agent with enhanced citation tracking."""
     def __init__(
         self,
         llm: Optional[ChatOpenAI] = None,
@@ -39,7 +40,7 @@ class ResearchAgent:
         )
         self.searcher = searcher or UnifiedSearcher()
         self.scraper = scraper or WebScraper(proxy=proxy)
-        
+        self.citation_manager = CitationManager()  # Initialize citation manager
         # Research parameters
         self.max_depth = max_depth
         self.breadth = breadth
@@ -138,12 +139,25 @@ class ResearchAgent:
         query: str,
         content: List[ScrapedContent]
     ) -> Dict[str, Any]:
-        """Analyze scraped content."""
+        """Analyze scraped content and track learnings with citation manager."""
         # Prepare content for analysis
         content_text = ""
         for item in content:
+            # Add source to citation manager
+            source_info = SourceInfo(
+                url=item.url,
+                title=item.title,
+                content_type=item.content_type,
+                access_time=time.time(),
+                domain=item.url.split("//")[1].split("/")[0] if "//" in item.url else "unknown",
+                reliability_score=0.8,  # Default score, could be more dynamic
+                metadata=item.metadata
+            )
+            self.citation_manager.add_source(source_info)
+            
+            # Format content for analysis
             content_text += f"\nSource: {item.url}\nTitle: {item.title}\n"
-            content_text += f"Content Summary:\n{item.text[:1000]}...\n"
+            content_text += f"Content Summary:\n{item.text[:2000]}...\n"
         
         # Use the content analysis prompt from centralized prompts
         analysis_prompt = ChatPromptTemplate.from_messages([
@@ -154,9 +168,19 @@ class ResearchAgent:
         analysis_chain = analysis_prompt | self.llm | StrOutputParser()
         analysis = await analysis_chain.ainvoke({"query": query, "content": content_text})
         
+        # Extract learnings from analysis and register them with citation manager
+        for item in content:
+            # Use citation manager to extract and register learnings
+            learning_hashes = self.citation_manager.extract_learning_from_text(
+                analysis,  # Use the analysis as the source of learnings
+                item.url,
+                context=f"Analysis for query: {query}"
+            )
+            
         return {
             "analysis": analysis,
-            "sources": [c.url for c in content]
+            "sources": [c.url for c in content],
+            "learnings": len(self.citation_manager.learnings)  # Track number of learnings
         }
 
     async def research(
@@ -165,7 +189,7 @@ class ResearchAgent:
         depth: Optional[int] = None,
         engines: List[str] = ["google", "duckduckgo"]
     ) -> ResearchResult:
-        """Execute the research process."""
+        """Execute the research process with enhanced citation tracking."""
         depth = depth if depth is not None else self.max_depth
         
         # Initialize research context
@@ -176,7 +200,8 @@ class ResearchAgent:
             "findings": "",
             "sources": [],
             "subqueries": [],
-            "content_analysis": []
+            "content_analysis": [],
+            "learnings_by_source": {}  # Track learnings by source
         }
         
         # Initial system prompt to set up the research
@@ -218,7 +243,8 @@ class ResearchAgent:
                 if urls_to_scrape:
                     scraped_content = await self.scraper.scrape_urls(
                         urls_to_scrape,
-                        dynamic=True
+                        dynamic=True,
+                        force_refresh=False  # Use cache when available
                     )
                     
                     if scraped_content:
@@ -227,7 +253,8 @@ class ResearchAgent:
                         context["content_analysis"].append({
                             "subquery": subquery,
                             "analysis": analysis["analysis"],
-                            "sources": analysis["sources"]
+                            "sources": analysis["sources"],
+                            "learnings": analysis.get("learnings", 0)
                         })
                 
                 # Add results to context
@@ -238,6 +265,7 @@ class ResearchAgent:
                         context["sources"].append(r)
                     else:
                         print(f"Warning: Skipping non-serializable search result: {type(r)}")
+                
                 context["findings"] += f"\n\nFindings for '{subquery}':\n{agent_result}"
                 
                 # Add content analysis if available
@@ -259,7 +287,21 @@ class ResearchAgent:
                 if source.get("url", "") in analysis["sources"]:
                     source_dict["detailed_analysis"] = analysis["analysis"]
             
+            # Add learnings from citation manager if available
+            if source.get("url") in self.citation_manager.source_to_learnings:
+                source_url = source.get("url")
+                learning_ids = self.citation_manager.source_to_learnings.get(source_url, [])
+                source_dict["tracked_learnings"] = len(learning_ids)
+                context["learnings_by_source"][source_url] = len(learning_ids)
+                
             detailed_sources.append(source_dict)
+        
+        # Get citation statistics
+        citation_stats = {
+            "total_sources": len(self.citation_manager.sources),
+            "total_learnings": len(self.citation_manager.learnings),
+            "source_reliability": self.citation_manager._calculate_source_reliability()
+        }
         
         return ResearchResult(
             query=query,
@@ -267,7 +309,8 @@ class ResearchAgent:
             sources=detailed_sources,
             subqueries=context["subqueries"],
             depth=depth,
-            content_analysis=context["content_analysis"]
+            content_analysis=context["content_analysis"],
+            citation_stats=citation_stats
         )
 
     def research_sync(

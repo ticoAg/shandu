@@ -86,14 +86,13 @@ Rate reliability as HIGH, MEDIUM, or LOW based on domain reputation, author expe
 PART 2 – EXTRACTED CONTENT:
 Deliver an exhaustive extraction of all relevant data, statistics, opinions, methodologies, and context directly related to the query. Do not omit any critical information. Be thorough yet organized.""",
 
-    "report_generation": """You must compile a massively comprehensive research report. Today's date: {{current_date}}.
+    "report_generation": """You must compile a comprehensive research report. Today's date: {{current_date}}.
 
-MANDATORY REQUIREMENTS - READ CAREFULLY AND OBEY FULLY:
-1. You MUST produce a report of at least 15,000 WORDS in total length, with no exceptions.
-2. DO NOT begin with a "Research Framework," "Objective," or any meta-commentary. Start with a # Title.
-3. The structure must be entirely dynamic with headings that reflect the content naturally.
-4. Substantiate factual statements with up to 15-25 references only.
-5. Provide 7-10 or more paragraphs of extensive detail for every major topic or section.
+MANDATORY REQUIREMENTS:
+1. DO NOT begin with a "Research Framework," "Objective," or any meta-commentary. Start with a # Title.
+2. The structure must be entirely dynamic with headings that reflect the content naturally.
+3. Substantiate factual statements with appropriate references.
+4. Provide detailed paragraphs for every major topic or section.
 
 MARKDOWN ENFORCEMENT:
 - Use headings (#, ##, ###) carefully to maintain a hierarchical structure.
@@ -101,12 +100,12 @@ MARKDOWN ENFORCEMENT:
 - Maintain significant spacing for readability.
 
 CONTENT VOLUME AND DEPTH:
-- Each main section must contain 1,000-1,500 words or more.
+- Each main section should be comprehensive and detailed.
 - Offer thorough historical context, theoretical underpinnings, practical applications, and future perspectives.
 - Provide a high level of detail, including multiple examples and case studies.
 
 REFERENCES:
-- Carefully include only 15-25 references that are absolutely indispensable.
+- Include well-chosen references that support key claims.
 - Cite them in bracketed numeric form [1], [2], etc., with a single reference list at the end.
 
 STRICT META AND FORMATTING RULES:
@@ -131,27 +130,27 @@ REQUIREMENTS:
 - Preserve all critical details mentioned by the user.
 - The format must be simple plain text with no extraneous headings or bullet points.""",
 
-    "report_enhancement": """You must drastically expand an existing research report to surpass 15,000 words in total. Today's date: {{current_date}}.
+    "report_enhancement": """You must enhance an existing research report for greater depth and clarity. Today's date: {{current_date}}.
 
-MANDATORY EXPANSION DIRECTIVES:
+MANDATORY ENHANCEMENT DIRECTIVES:
 1. Eliminate any mention of "Research Framework," "Objective," or similar sections.
 2. Start with a # heading for the report title, with no meta-commentary.
-3. Restrict references to 15-25 of the most valuable sources.
-4. Transform each section into a deeply thorough analysis with a minimum of 7-10 paragraphs.
-5. Use extensive markdown formatting, including headings, bold, italics, code blocks, blockquotes, tables, and horizontal rules, to create a highly readable, visually structured document.
+3. Use references that provide valuable supporting evidence.
+4. Transform each section into a thorough analysis with comprehensive paragraphs.
+5. Use markdown formatting, including headings, bold, italics, code blocks, blockquotes, tables, and horizontal rules, to create a highly readable, visually structured document.
 6. Omit any mention of time spent or processes used to generate the report.
 
-CONTENT EXPANSION:
-- Triple or quadruple the original length.
+CONTENT ENHANCEMENT:
+- Improve depth and clarity throughout.
 - Provide more examples, historical backgrounds, theoretical frameworks, and future directions.
 - Compare multiple viewpoints and delve into technical complexities.
 - Maintain cohesive narrative flow and do not introduce contradictory information.
 
 Your final product must be an authoritative work that exhibits academic-level depth, thoroughness, and clarity.""",
 
-    "section_expansion": """You must significantly expand the specified section of the research report to at least 2,000-3,000 words. Strictly adhere to the following:
+    "section_expansion": """You must significantly expand the specified section of the research report. Strictly adhere to the following:
 
-- Add 10-15 newly written paragraphs of in-depth analysis and context.
+- Add newly written paragraphs of in-depth analysis and context.
 - Employ extensive markdown for headings, tables, bold highlights, italics, code blocks, blockquotes, and lists.
 - Include comprehensive examples, case studies, historical trajectories, theoretical frameworks, and nuanced viewpoints.
 

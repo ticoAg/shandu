@@ -1,27 +1,30 @@
 from typing import List, Dict, Optional, Any, Union
 import asyncio
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
+from langchain_community.tools import DuckDuckGoSearchRun, DuckDuckGoSearchResults
 from .search import UnifiedSearcher, SearchResult
 from ..config import config
 from ..scraper import WebScraper, ScrapedContent
+from ..agents.utils.citation_manager import CitationManager, SourceInfo
 
 @dataclass
 class AISearchResult:
-    """Container for AI-enhanced search results with enriched output."""
+    """Container for AI-enhanced search results with enriched output and citation tracking."""
     query: str
     summary: str
     sources: List[Dict[str, Any]]
+    citation_stats: Optional[Dict[str, Any]] = None
     timestamp: datetime = datetime.now()
     
     def to_markdown(self) -> str:
         """Convert to markdown format with improved readability."""
         timestamp_str = self.timestamp.strftime('%Y-%m-%d %H:%M:%S')
         md = [
-            f"# Search Results for: {self.query}",
-            f"*Generated on: {timestamp_str}*",
+            f"# {self.query}",
             "## Summary",
             self.summary,
             "## Sources"
@@ -39,28 +42,42 @@ class AISearchResult:
             if snippet:
                 md.append(f"- **Snippet:** {snippet}")
             md.append("")
+            
+        # Add citation statistics if available
+        if self.citation_stats:
+            md.append("## Research Process")
+            md.append(f"- **Sources Analyzed**: {self.citation_stats.get('total_sources', len(self.sources))}")
+            md.append(f"- **Key Information Points**: {self.citation_stats.get('total_learnings', 0)}")
+            if self.citation_stats.get('source_reliability'):
+                md.append(f"- **Source Quality**: {len(self.citation_stats.get('source_reliability', {}))} domains assessed")
+            md.append("")
+            
         return "\n".join(md)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format."""
-        return {
+        result = {
             "query": self.query,
             "summary": self.summary,
             "sources": self.sources,
             "timestamp": self.timestamp.isoformat()
         }
+        if self.citation_stats:
+            result["citation_stats"] = self.citation_stats
+        return result
 
 class AISearcher:
     """
     AI-powered search functionality.
     Combines search results with AI analysis for any type of query.
-    Enhanced with scraping capability, detailed outputs, and source citations.
+    Enhanced with scraping capability, detailed outputs, source citations, and learning extraction.
     """
     def __init__(
         self,
         llm: Optional[ChatOpenAI] = None,
         searcher: Optional[UnifiedSearcher] = None,
         scraper: Optional[WebScraper] = None,
+        citation_manager: Optional[CitationManager] = None,
         max_results: int = 10,
         max_pages_to_scrape: int = 3
     ):
@@ -76,15 +93,21 @@ class AISearcher:
         )
         self.searcher = searcher or UnifiedSearcher(max_results=max_results)
         self.scraper = scraper or WebScraper()
+        self.citation_manager = citation_manager or CitationManager()
         self.max_results = max_results
         self.max_pages_to_scrape = max_pages_to_scrape
+        
+        # Initialize DuckDuckGo search tools
+        self.ddg_search = DuckDuckGoSearchRun()
+        self.ddg_results = DuckDuckGoSearchResults(output_format="list")
     
     async def search(
         self, 
         query: str,
         engines: Optional[List[str]] = None,
         detailed: bool = False,
-        enable_scraping: bool = True
+        enable_scraping: bool = True,
+        use_ddg_tools: bool = True
     ) -> AISearchResult:
         """
         Perform AI-enhanced search with detailed outputs and source citations.
@@ -94,21 +117,50 @@ class AISearcher:
             engines: List of search engines to use
             detailed: Whether to generate a detailed analysis
             enable_scraping: Whether to scrape content from top results
-            
+            use_ddg_tools: Whether to use DuckDuckGo tools from langchain_community
+        
         Returns:
             AISearchResult object with a comprehensive summary and cited sources
         """
         timestamp = datetime.now()
-        search_results = await self.searcher.search(query, engines)
+        sources = []
+        
+        # Use DuckDuckGo tools if enabled
+        if use_ddg_tools and (not engines or 'duckduckgo' in engines):
+            try:
+                # Get structured results with metadata using DuckDuckGoSearchResults
+                ddg_structured_results = self.ddg_results.invoke(query)
+                for result in ddg_structured_results[:self.max_results]:
+                    source_info = {
+                        "title": result.get("title", "Untitled"),
+                        "url": result.get("link", ""),
+                        "snippet": result.get("snippet", ""),
+                        "source": "DuckDuckGo"
+                    }
+                    sources.append(source_info)
+                    
+                    # Register source with citation manager
+                    self._register_source_with_citation_manager(source_info)
+            except Exception as e:
+                print(f"Error using DuckDuckGoSearchResults: {e}")
+        
+        # Use UnifiedSearcher as a fallback or if DuckDuckGo tools are disabled
+        if not sources or not use_ddg_tools:
+            search_results = await self.searcher.search(query, engines)
         
         # Collect all sources
-        sources = []
-        for result in search_results:
-            if isinstance(result, SearchResult):
-                result_dict = result.to_dict()
-                sources.append(result_dict)
-            elif isinstance(result, dict):
-                sources.append(result)
+            for result in search_results:
+                if isinstance(result, SearchResult):
+                    result_dict = result.to_dict()
+                    sources.append(result_dict)
+                    
+                    # Register source with citation manager
+                    self._register_source_with_citation_manager(result_dict)
+                elif isinstance(result, dict):
+                    sources.append(result)
+                    
+                    # Register source with citation manager
+                    self._register_source_with_citation_manager(result)
         
         # Scrape additional content if enabled
         if enable_scraping:
@@ -128,12 +180,22 @@ class AISearcher:
                             if "unexpected error" in main_content.lower():
                                 continue
                             preview = main_content[:500] + ("...(truncated)" if len(main_content) > 1500 else "")
-                            sources.append({
+                            source_info = {
                                 "title": scraped.title,
                                 "url": scraped.url,
                                 "snippet": preview,
                                 "source": "Scraped Content"
-                            })
+                            }
+                            sources.append(source_info)
+                            
+                            # Register source with citation manager and extract learnings
+                            source_id = self._register_source_with_citation_manager(source_info)
+                            if source_id and main_content:
+                                self.citation_manager.extract_learning_from_text(
+                                    main_content, 
+                                    scraped.url,
+                                    context=f"Search query: {query}"
+                                )
                         except Exception as e:
                             print(f"Error processing scraped content from {scraped.url}: {e}")
         
@@ -156,9 +218,9 @@ class AISearcher:
         current_date = timestamp.strftime('%Y-%m-%d')
         if detailed:
             detail_instruction = (
-                "Provide a detailed and comprehensive analysis, including in-depth explanations, "
-                "specific examples, relevant background information, and any additional insights "
-                "that enhance understanding of the topic."
+                "Provide a detailed analysis with in-depth explanations, "
+                "specific examples, relevant background, and additional insights "
+                "to enhance understanding of the topic."
             )
         else:
             detail_instruction = "Provide a concise yet informative summary, focusing on the key points and essential information."
@@ -180,20 +242,65 @@ Sources:
 """
         
         final_output = await self.llm.ainvoke(final_prompt)
+                
+        # Get citation statistics if any sources were analyzed
+        citation_stats = None
+        if sources:
+            citation_stats = {
+                "total_sources": len(self.citation_manager.sources),
+                "total_learnings": len(self.citation_manager.learnings),
+                "source_reliability": self.citation_manager._calculate_source_reliability()
+            }
         
         return AISearchResult(
             query=query,
             summary=final_output.content.strip(),
             sources=sources,
+            citation_stats=citation_stats,
             timestamp=timestamp
         )
+    
+    def _register_source_with_citation_manager(self, source: Dict[str, Any]) -> Optional[str]:
+        """Register a source with the citation manager and return its ID."""
+        try:
+            url = source.get('url', '')
+            if not url:
+                return None
+                
+            title = source.get('title', 'Untitled')
+            snippet = source.get('snippet', '')
+            source_type = source.get('source', 'web')
+            
+            # Extract domain from URL
+            domain = url.split("//")[1].split("/")[0] if "//" in url else "unknown"
+            
+            # Create a SourceInfo object
+            source_info = SourceInfo(
+                url=url,
+                title=title,
+                snippet=snippet,
+                source_type=source_type,
+                content_type="article",
+                access_time=time.time(),
+                domain=domain,
+                reliability_score=0.8,  # Default score
+                metadata=source
+            )
+            
+            # Add to citation manager
+            return self.citation_manager.add_source(source_info)
+            
+        except Exception as e:
+            print(f"Error registering source with citation manager: {e}")
+            return None
     
     def search_sync(
         self, 
         query: str,
         engines: Optional[List[str]] = None,
         detailed: bool = False,
-        enable_scraping: bool = True
+        enable_scraping: bool = True,
+        use_ddg_tools: bool = True
     ) -> AISearchResult:
         """Synchronous version of the search method."""
-        return asyncio.run(self.search(query, engines, detailed, enable_scraping))
+        return asyncio.run(self.search(query, engines, detailed, enable_scraping, use_ddg_tools))
