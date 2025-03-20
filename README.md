@@ -1,4 +1,5 @@
 # Shandu: Advanced AI Research System for Comprehensive Knowledge Synthesis
+[EN](README.md) | [中文](README_zh.md)
 
 Shandu is a cutting-edge AI research assistant that performs in-depth, multi-source research on any topic using advanced language models, intelligent web scraping, and iterative exploration to generate comprehensive, well-structured reports with proper citations.
 
